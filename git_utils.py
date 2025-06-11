@@ -62,18 +62,20 @@ def checkout(repo_path, ref_name):
 
             # Check if a local branch with this simple name already exists
             # `git branch --list <branch_name>` outputs the branch name if it exists, or empty otherwise.
-            stdout_check, _, retcode_check = run_git_command(['branch', '--list', safe_simple_branch_name], repo_path)
+            stdout_check, _, retcode_check = run_git_command(['branch', '--list', safe_simple_branch_name], repo_path) # Using _ for stderr_check as it's not used here.
 
-            if retcode_check == 0 and not stdout_check.strip():
-                # Local branch does not exist, create it and track the remote branch
-                # Command: git checkout -b <simple_branch_name> <original_remote_ref_name>
-                return run_git_command(['checkout', '-b', safe_simple_branch_name, safe_ref_name], repo_path)
+            if retcode_check == 0: # 'git branch --list' command executed successfully
+                if not stdout_check.strip():
+                    # Local branch does not exist, create it and track the remote branch
+                    # Command: git checkout -b <simple_branch_name> <original_remote_ref_name>
+                    return run_git_command(['checkout', '-b', safe_simple_branch_name, safe_ref_name], repo_path)
+                else:
+                    # Local branch with the same name exists, checkout this local branch instead of the remote one.
+                    return run_git_command(['checkout', safe_simple_branch_name], repo_path)
             else:
-                # Local branch exists, or there was an error checking. Fallback to direct checkout.
-                # This will checkout the existing local branch if simple_branch_name matches a local one,
-                # or attempt to checkout the remote ref directly (which might lead to detached HEAD if not what user wants,
-                # but aligns with standard git behavior if local branch of same name isn't the target).
-                # The prompt specified "git checkout <ref_name>" for this case.
+                # 'git branch --list' command failed. Fallback to trying to checkout the original ref_name directly.
+                # This might lead to detached HEAD if the ref is a remote tracking branch,
+                # or other errors, but it's a fallback for an unexpected error during the check.
                 return run_git_command(['checkout', safe_ref_name], repo_path)
         else:
             # Malformed remote branch name, fallback to direct checkout

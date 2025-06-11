@@ -256,6 +256,45 @@ class TestDeploymentServiceEndpoints(unittest.TestCase): # Renamed class
         self.assertEqual(retcode_track, 0, msg=f"Could not get tracking info. Stderr: {_}")
         self.assertEqual(tracking_branch_stdout, f"origin/{REMOTE_ONLY_BRANCH}")
 
+    def test_checkout_remote_branch_when_local_exists_activates_local_branch(self):
+        # Setup:
+        # _init_git_repos creates 'new-feature-branch', pushes it to origin,
+        # and then checks out 'main'. So, 'new-feature-branch' exists locally
+        # and 'remotes/origin/new-feature-branch' is known.
+        # The local repo is currently on 'main'.
+
+        local_existing_branch_name = 'new-feature-branch'
+        remote_ref_to_checkout = f'remotes/origin/{local_existing_branch_name}'
+
+        # Pre-condition check: ensure we are on main
+        current_branch_before, _, _ = git_utils.get_current_branch_or_commit(self.local_repo_dir)
+        self.assertEqual(current_branch_before, 'main', "Setup error: current branch should be main before test.")
+
+        # Action: Call checkout for the remote branch, expecting it to switch to the existing local one
+        with app.app_context():
+            response = self.app_client.post('/git/checkout', json={'ref': remote_ref_to_checkout})
+
+        self.assertEqual(response.status_code, 200, msg=f"Checkout failed. Response data: {response.data.decode() if response.data else 'No data'}")
+        data = json.loads(response.data)
+        # The message might still reflect the original ref due to how the endpoint is written,
+        # but the important part is the actual checked out branch.
+        # Example: "Checkout to 'remotes/origin/new-feature-branch' successful."
+        self.assertTrue(f"Checkout to '{remote_ref_to_checkout}' successful." in data['message'])
+
+        # Assertions:
+        # 1. Current branch is the local 'new-feature-branch'
+        current_branch_after, _, retcode_cb = git_utils.get_current_branch_or_commit(self.local_repo_dir)
+        self.assertEqual(retcode_cb, 0)
+        self.assertEqual(current_branch_after, local_existing_branch_name,
+                         "Current branch should be the local existing branch, not the remote ref or HEAD.")
+
+        # 2. (Optional but good) Verify it's not in a detached HEAD state.
+        #    The previous check (current_branch_after == local_existing_branch_name) already implies this,
+        #    as a detached HEAD would typically report 'HEAD' or the commit hash.
+        #    For good measure, check that 'HEAD' is not the branch name.
+        self.assertNotEqual(current_branch_after, "HEAD")
+
+
     def test_git_checkout_missing_ref_with_real_repo(self):
         # No mock for os.path.isdir needed as GIT_REPO_PATH is valid
         with app.app_context():
