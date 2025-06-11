@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Git Admin</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1, h2 { color: #333; }
+        button { padding: 10px 15px; margin: 5px 0; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        .danger-button { background-color: #dc3545; }
+        .danger-button:hover { background-color: #c82333; }
+        select, input[type="text"] { padding: 8px; margin-right: 10px; border-radius: 4px; border: 1px solid #ddd; }
+        pre { background-color: #eee; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; max-height: 200px; overflow-y: auto; }
+        .section { margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .section:last-child { border-bottom: none; }
+        .status-message { padding: 10px; margin-top: 10px; border-radius: 4px; }
+        .status-message.success { background-color: #d4edda; color: #155724; }
+        .status-message.error { background-color: #f8d7da; color: #721c24; }
+        .status-message.info { background-color: #d1ecf1; color: #0c5460; } /* Added style for info */
+    </style>
+</head>
+<body>
+    <div class="container">
+        {% if not git_repo_path_valid %}
+        <div style="color: red; border: 1px solid red; padding: 10px; margin-bottom: 15px;">
+            <strong>Configuration Warning:</strong> The configured GIT_REPO_PATH ({{ git_repo_path|default('Not Set') }}) is not a valid directory.
+            Please configure it correctly for the deployment service. API calls may fail.
+        </div>
+        {% endif %}
+        <h1>Git Repository Management</h1>
+
+        <div id="statusMessage" class="status-message" style="display:none;"></div>
+
+        <div class="section">
+            <h2>Current Status</h2>
+            <p><strong>Current Branch/Commit:</strong> <span id="currentBranch">Loading...</span></p>
+            <button onclick="fetchGitInfo()">Refresh Status</button>
+        </div>
+
+        <div class="section">
+            <h2>Repository Actions</h2>
+            <button onclick="gitFetch()">Git Fetch</button>
+            <button onclick="gitPull()">Git Pull</button>
+        </div>
+
+        <div class="section">
+            <h2>Checkout Branch/Tag</h2>
+            <select id="refSelect" aria-label="Select branch or tag">
+                <option value="">Select a branch or tag</option>
+            </select>
+            <button onclick="gitCheckout()">Checkout</button>
+        </div>
+        
+        <div class="section">
+            <h2>Recent Commits</h2>
+            <pre id="commitLog">Loading...</pre>
+        </div>
+
+        <div class="section">
+            <h2>Available Branches</h2>
+            <pre id="branchesList">Loading...</pre>
+        </div>
+
+        <div class="section">
+            <h2>Available Tags</h2>
+            <pre id="tagsList">Loading...</pre>
+        </div>
+        
+        <div class="section">
+            <h2>Service Management</h2>
+            <button onclick="restartService()" class="danger-button">Restart Service</button>
+        </div>
+    </div>
+
+    <script>
+        let globalStatusTimeoutId; // Store the timeout ID globally
+
+        async function fetchGitInfo() {
+            updateStatus('Fetching git info...', 'info', 10000); 
+            try {
+                const response = await fetch('/git/info');
+                const data = await response.json();
+
+                if (response.ok) {
+                    document.getElementById('currentBranch').textContent = data.current_branch_or_commit || 'N/A';
+                    document.getElementById('commitLog').textContent = Array.isArray(data.log) ? data.log.join('\n') : (data.log || 'No commits found or error.');
+                    document.getElementById('branchesList').textContent = Array.isArray(data.branches) ? data.branches.join('\n') : (data.branches || 'No branches found or error.');
+                    document.getElementById('tagsList').textContent = Array.isArray(data.tags) ? data.tags.join('\n') : (data.tags || 'No tags found or error.');
+                    
+                    const refSelect = document.getElementById('refSelect');
+                    refSelect.innerHTML = '<option value="">Select a branch or tag</option>'; 
+                    if (Array.isArray(data.branches)) {
+                        data.branches.forEach(branch => {
+                            if (branch) { 
+                                const option = document.createElement('option');
+                                option.value = branch;
+                                option.textContent = 'Branch: ' + branch;
+                                refSelect.appendChild(option);
+                            }
+                        });
+                    }
+                    if (Array.isArray(data.tags)) {
+                        data.tags.forEach(tag => {
+                             if (tag) { 
+                                const option = document.createElement('option');
+                                option.value = tag;
+                                option.textContent = 'Tag: ' + tag;
+                                refSelect.appendChild(option);
+                            }
+                        });
+                    }
+                    
+                    let primaryMessage = 'Git info updated.';
+                    let messageType = 'success';
+                    if (data.errors && Object.values(data.errors).some(e => e !== null)) {
+                        let errorMessages = [];
+                        for (const key in data.errors) {
+                            if (data.errors[key]) {
+                                errorMessages.push(`${key.replace('_error', '')}: ${data.errors[key]}`);
+                            }
+                        }
+                        if (errorMessages.length > 0) {
+                             primaryMessage = 'Git info loaded with some errors: ' + errorMessages.join('; ');
+                             messageType = 'error'; 
+                        }
+                    }
+                    updateStatus(primaryMessage, messageType);
+
+                } else {
+                    const errorDetail = data.error || (data.details ? `${data.details} (Status: ${response.status})` : `Failed to fetch git info. Status: ${response.status}`);
+                    throw new Error(errorDetail);
+                }
+            } catch (error) {
+                document.getElementById('currentBranch').textContent = 'Error';
+                document.getElementById('commitLog').textContent = 'Error fetching commits.';
+                document.getElementById('branchesList').textContent = 'Error fetching branches.';
+                document.getElementById('tagsList').textContent = 'Error fetching tags.';
+                updateStatus('Error fetching Git info: ' + error.message, 'error', 10000); 
+            }
+        }
+
+        async function gitFetch() {
+            await handleGitAction('/git/fetch', {}, 'Fetching repository...');
+        }
+
+        async function gitPull() {
+            await handleGitAction('/git/pull', {}, 'Pulling latest changes...');
+        }
+
+        async function gitCheckout() {
+            const ref = document.getElementById('refSelect').value;
+            if (!ref) {
+                updateStatus('Please select a branch or tag to checkout.', 'error');
+                return;
+            }
+            await handleGitAction('/git/checkout', { ref: ref }, `Checking out ${ref}...`);
+        }
+
+        async function restartService() {
+            if (!confirm('Are you sure you want to restart the service?')) {
+                return;
+            }
+            await handleGitAction('/service/restart', {}, 'Attempting to restart service...');
+        }
+
+        async function handleGitAction(endpoint, body, loadingMessage) {
+            updateStatus(loadingMessage, 'info'); // Use default duration for info, or set explicitly if needed
+            let responseData = null; 
+            try {
+                const options = {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                };
+                if (Object.keys(body).length > 0) {
+                    options.body = JSON.stringify(body);
+                }
+                const response = await fetch(endpoint, options);
+                responseData = await response.json(); 
+
+                if (response.ok) {
+                    updateStatus(responseData.message || 'Action successful.', 'success');
+                    if (responseData.stdout) console.log('STDOUT:', responseData.stdout); 
+                    if (responseData.stderr) console.warn('STDERR:', responseData.stderr); // Changed to warn for any stderr
+                } else {
+                    let detail = responseData.error || `Action failed: ${response.statusText} (Status: ${response.status})`;
+                    if (responseData.stdout) {
+                        detail += `<br><br><strong>Output:</strong><pre>${escapeHtml(responseData.stdout)}</pre>`;
+                    }
+                    if (responseData.stderr) {
+                        detail += `<br><br><strong>Error Details:</strong><pre>${escapeHtml(responseData.stderr)}</pre>`;
+                    }
+                    throw new Error(detail); 
+                }
+                
+                if (endpoint.startsWith('/git/')) {
+                    fetchGitInfo();
+                }
+            } catch (error) { 
+                let message = 'Error: ' + error.message;
+                // This check is to ensure that if responseData is available and the error message 
+                // (which might already include details if thrown from the 'else' block) 
+                // doesn't already contain these, they are appended.
+                // Primarily for network errors where responseData might be null or error is not from the 'else' block.
+                if (responseData && (responseData.stdout || responseData.stderr) && !error.message.includes(responseData.stderr) && !error.message.includes(responseData.stdout)) {
+                    if (responseData.stdout) {
+                        message += `<br><br><strong>Output:</strong><pre>${escapeHtml(responseData.stdout)}</pre>`;
+                    }
+                    if (responseData.stderr) {
+                        message += `<br><br><strong>Error Details:</strong><pre>${escapeHtml(responseData.stderr)}</pre>`;
+                    }
+                }
+                updateStatus(message, 'error', 10000); 
+                console.error('Action Error Original:', error); // Log original error object for full details
+            }
+        }
+
+        // Helper function to escape HTML to prevent XSS if stdout/stderr contains HTML characters
+        function escapeHtml(unsafe) {
+            if (typeof unsafe !== 'string') {
+                try {
+                    // Attempt to stringify if it's an object/array, useful for unexpected non-string stderr/stdout
+                    return JSON.stringify(unsafe, null, 2)
+                               .replace(/&/g, "&amp;")
+                               .replace(/</g, "&lt;")
+                               .replace(/>/g, "&gt;")
+                               .replace(/"/g, "&quot;")
+                               .replace(/'/g, "&#039;");
+                } catch {
+                    return String(unsafe); // Fallback for types that JSON.stringify might fail on (e.g. circular refs)
+                }
+            }
+            return unsafe
+                 .replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;")
+                 .replace(/"/g, "&quot;")
+                 .replace(/'/g, "&#039;");
+        }
+        
+        function updateStatus(message, type, duration = 5000) {
+            const statusElement = document.getElementById('statusMessage');
+            clearTimeout(globalStatusTimeoutId); // Use the existing globalStatusTimeoutId
+
+            statusElement.innerHTML = message; // Use innerHTML to render <pre> and <br>
+            statusElement.className = 'status-message ' + type; 
+            statusElement.style.display = 'block';
+            
+            // 'info' messages with duration 0 (or if not specified by 'info' call) will use default 5s timeout.
+            // To make an 'info' message persistent until the next update, one might pass a very long duration 
+            // or handle it specially, but current logic uses duration.
+            // A duration of 0 for info would mean it disappears almost immediately if not handled.
+            // The prompt example `updateStatus(loadingMessage, 'info');` would use 5000ms.
+            // The prompt example `updateStatus('Fetching git info...', 'info', 10000);` uses 10000ms.
+            globalStatusTimeoutId = setTimeout(() => {
+                statusElement.style.display = 'none';
+            }, duration);
+        }
+
+        document.addEventListener('DOMContentLoaded', fetchGitInfo);
+    </script>
+</body>
+</html>
