@@ -46,11 +46,41 @@ def get_log(repo_path, count=20):
     return run_git_command(['log', '--oneline', '--decorate', f'-n{count}'], repo_path)
 
 def checkout(repo_path, ref_name):
-    """Performs git checkout <ref_name>."""
-    # Sanitize ref_name to prevent command injection if it were ever directly from user input without validation
-    # Although in our case, we'll likely be selecting from known branches/tags
+    """
+    Performs git checkout <ref_name>.
+    If ref_name is a remote branch (e.g., remotes/origin/feature),
+    it attempts to check it out as a local tracking branch.
+    """
     safe_ref_name = shlex.quote(ref_name)
-    return run_git_command(['checkout', safe_ref_name], repo_path)
+
+    if ref_name.startswith('remotes/'):
+        # Potential remote branch. Example: remotes/origin/my-feature
+        parts = ref_name.split('/')
+        if len(parts) > 2: # Minimum remotes/<remote_name>/<branch_name>
+            simple_branch_name = parts[-1]
+            safe_simple_branch_name = shlex.quote(simple_branch_name)
+
+            # Check if a local branch with this simple name already exists
+            # `git branch --list <branch_name>` outputs the branch name if it exists, or empty otherwise.
+            stdout_check, _, retcode_check = run_git_command(['branch', '--list', safe_simple_branch_name], repo_path)
+
+            if retcode_check == 0 and not stdout_check.strip():
+                # Local branch does not exist, create it and track the remote branch
+                # Command: git checkout -b <simple_branch_name> <original_remote_ref_name>
+                return run_git_command(['checkout', '-b', safe_simple_branch_name, safe_ref_name], repo_path)
+            else:
+                # Local branch exists, or there was an error checking. Fallback to direct checkout.
+                # This will checkout the existing local branch if simple_branch_name matches a local one,
+                # or attempt to checkout the remote ref directly (which might lead to detached HEAD if not what user wants,
+                # but aligns with standard git behavior if local branch of same name isn't the target).
+                # The prompt specified "git checkout <ref_name>" for this case.
+                return run_git_command(['checkout', safe_ref_name], repo_path)
+        else:
+            # Malformed remote branch name, fallback to direct checkout
+            return run_git_command(['checkout', safe_ref_name], repo_path)
+    else:
+        # Not a remote-looking branch, proceed with normal checkout
+        return run_git_command(['checkout', safe_ref_name], repo_path)
 
 def pull(repo_path):
     """Performs git pull on the current branch."""
