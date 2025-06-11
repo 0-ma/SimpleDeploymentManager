@@ -39,21 +39,12 @@ To configure using the JSON file:
             *   To restart a Python application, you might first find its process ID (PID). You could list Python processes using a command like `ps aux | grep python`. Then, a more specific restart command might involve `pkill` (which sends a signal to processes based on name or other attributes). For instance, if your application is run with `/usr/local/bin/python /home/user/app/app.py`, you could use `pkill -f "/usr/local/bin/python /home/user/app/app.py"`. Be cautious with `pkill` to ensure you target the correct process. Often, this command would be part of a larger script that also handles restarting the application.
         *   If not configured, the service will not be able to restart the main application. The default is an echo command indicating it's not configured.
 
-    *   **`DS_HOST`**: (String) The network host address on which the deployment service will listen.
-        *   *Default*: `"0.0.0.0"` (listens on all available network interfaces)
-        *   Can also be set to `"127.0.0.1"` for local access only.
-
-    *   **`DS_PORT`**: (Integer) The network port on which the deployment service will listen.
-        *   *Default*: `55009`
-
 **Environment Variables:**
 
 You can also set or override these configurations using environment variables:
 
 *   `DS_GIT_REPO_PATH`
 *   `DS_MAIN_APP_RESTART_COMMAND`
-*   `DS_HOST`
-*   `DS_PORT`
 
 For example, to set the Git repository path via an environment variable:
 `export DS_GIT_REPO_PATH="/path/to/your/main/app/repo"`
@@ -73,18 +64,12 @@ To run the deployment service:
     python deployment_service.py
     ```
 
-This will start the Flask development server. By default, it will be accessible at `http://<DS_HOST>:<DS_PORT>`.
+This will start the Flask development server. **Note:** The host and port for the development server are still configured via `DS_HOST`/`DS_PORT` if you run `python deployment_service.py` directly, but this method is not recommended for production.
 
 **Important for Production:**
 
-The Flask development server is not suitable for production environments. For production deployment, use a production-grade WSGI server such as Gunicorn or uWSGI.
+The Flask development server (`python deployment_service.py`) is not suitable for production environments. For production deployment, always use a production-grade WSGI server such as Gunicorn or uWSGI. Refer to the "Running with Gunicorn" section below for specific instructions on how to run the service with Gunicorn, including how to specify the host and port.
 
-*Example with Gunicorn:*
-
-```bash
-gunicorn --bind <DS_HOST>:<DS_PORT> deployment_service:app
-```
-Replace `<DS_HOST>` and `<DS_PORT>` with your configured host and port.
 
 ## Running with Gunicorn
 
@@ -101,7 +86,7 @@ For example, to run Gunicorn listening on port 5001 on all network interfaces:
 gunicorn --bind 0.0.0.0:5001 deployment_service:app
 ```
 
-Make sure you have Gunicorn installed (`pip install gunicorn`). It's recommended to use the host and port values that are consistent with your `DS_HOST` and `DS_PORT` configuration for the service.
+Make sure you have Gunicorn installed (`pip install gunicorn`). The `DS_HOST` and `DS_PORT` settings in the configuration file or environment variables are no longer used to determine the listening address for the Gunicorn server. You **must** use the `--bind <host>:<port>` command-line argument with Gunicorn to specify the desired host and port.
 
 ## Service Deployment (Systemd)
 
@@ -131,16 +116,16 @@ To run this deployment service as a background system service on Linux systems u
     Ensure the `WorkingDirectory` points to the root of this service's directory (where `deployment_service.py` is located), and `ExecStart` correctly points to your Python 3 executable and the `deployment_service.py` script. The `User` should be the user under which the service will run.
 
 2.  **Configure Firewall (if `ufw` is used):**
-    If you are using `ufw` (Uncomplicated Firewall), you'll need to allow traffic on the port this service listens on. The service is configured via `DS_PORT`, which defaults to `55009` (see Configuration section).
+    If you are using `ufw` (Uncomplicated Firewall), you'll need to allow traffic on the port this service listens on (as specified in your Gunicorn `--bind` argument).
 
-    Execute the following commands, replacing `<DS_PORT>` with the actual port number if you have configured a different one:
+    Execute the following commands, replacing `<your_gunicorn_port>` with the actual port number you are using with Gunicorn:
     ```bash
-    sudo ufw allow <DS_PORT>/tcp
+    sudo ufw allow <your_gunicorn_port>/tcp
     sudo ufw reload
     ```
-    For example, if using the default port `55009`:
+    For example, if Gunicorn is configured to listen on port `5001`:
     ```bash
-    sudo ufw allow 55009/tcp
+    sudo ufw allow 5001/tcp
     sudo ufw reload
     ```
 
@@ -161,7 +146,7 @@ The service exposes the following REST API endpoints for programmatic control:
 
 *   **`GET /health`**
     *   **Description:** Checks the health of the deployment service.
-    *   **Response:** JSON object indicating the status, configured paths, and listening address.
+    *   **Response:** JSON object indicating the status and configured paths.
 
 *   **`GET /`**
     *   **Description:** Serves the HTML admin interface.
@@ -204,7 +189,7 @@ The service exposes the following REST API endpoints for programmatic control:
 
 ## Admin Interface
 
-The service includes a basic web-based admin interface accessible by navigating to the root URL (e.g., `http://<DS_HOST>:<DS_PORT>/`) in a web browser.
+The service includes a basic web-based admin interface accessible by navigating to the root URL (e.g., `http://<your_gunicorn_host>:<your_gunicorn_port>/`) in a web browser, where `<your_gunicorn_host>` and `<your_gunicorn_port>` are the host and port specified in your Gunicorn command.
 
 From the admin interface, you can:
 
