@@ -71,6 +71,7 @@
         <div class="section">
             <h2>Service Management</h2>
             <button onclick="restartService()" class="danger-button">Restart Service</button>
+            <button id="restartDeploymentServiceButton" onclick="restartDeploymentService()" class="danger-button">Restart Deployment Service</button>
         </div>
     </div>
 
@@ -163,6 +164,13 @@
                 return;
             }
             await handleGitAction('/service/restart', {}, 'Attempting to restart service...');
+        }
+
+        async function restartDeploymentService() {
+            if (!confirm('Are you sure you want to restart the deployment service itself? This will temporarily interrupt its operations.')) {
+                return;
+            }
+            await handleGitAction('/deployment-service/restart-self', {}, 'Attempting to restart deployment service...');
         }
 
         async function handleGitAction(endpoint, body, loadingMessage) {
