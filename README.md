@@ -86,6 +86,23 @@ gunicorn --bind <DS_HOST>:<DS_PORT> deployment_service:app
 ```
 Replace `<DS_HOST>` and `<DS_PORT>` with your configured host and port.
 
+## Running with Gunicorn
+
+To run the deployment service using Gunicorn, a production-grade WSGI server, use the following command structure:
+
+```bash
+gunicorn --bind <host>:<port> deployment_service:app
+```
+
+Replace `<host>` with the desired host address (e.g., `0.0.0.0` to listen on all interfaces, or `127.0.0.1` for local access only) and `<port>` with the desired port number. The `deployment_service:app` part tells Gunicorn to use the `app` Flask object from the `deployment_service.py` file.
+
+For example, to run Gunicorn listening on port 5001 on all network interfaces:
+```bash
+gunicorn --bind 0.0.0.0:5001 deployment_service:app
+```
+
+Make sure you have Gunicorn installed (`pip install gunicorn`). It's recommended to use the host and port values that are consistent with your `DS_HOST` and `DS_PORT` configuration for the service.
+
 ## Service Deployment (Systemd)
 
 To run this deployment service as a background system service on Linux systems using systemd, follow these steps. Step 1 details the systemd unit configuration. Firewall configuration is detailed in Step 2 below.
