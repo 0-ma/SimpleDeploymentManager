@@ -11,9 +11,8 @@
 import os
 import json # Add this import
 import sys # Import sys module
-import threading # Import threading module
-import time # Import time module
-from flask import Flask, jsonify, request, current_app, render_template # REMOVED after_this_request
+import signal # Import signal module
+from flask import Flask, jsonify, request, current_app, render_template
 import git_utils
 import shlex
 import subprocess
@@ -309,27 +308,44 @@ def service_restart_route():
 
 # --- Deployment Service Management Endpoints ---
 
-def do_exit():
-    """Helper function to call sys.exit(0)."""
-    sys.exit(0)
-
 @app.route('/deployment-service/restart-self', methods=['POST'])
 def deployment_service_restart_self_route():
-    current_app.logger.info("Deployment service restart initiated via API. Scheduling shutdown.")
+    current_app.logger.info("Gunicorn self-restart initiated. Attempting to signal Gunicorn master.")
 
-    def delayed_exit():
-        """Sleeps briefly then calls do_exit."""
-        time.sleep(0.1) # Short delay to allow HTTP response to be sent
-        current_app.logger.info("Executing delayed exit now.")
-        do_exit()
+    pid_file_path = os.environ.get('GUNICORN_PID_FILE_PATH')
 
-    # Create and start a daemon thread to handle the exit.
-    # This allows the main thread to return the HTTP response before exiting.
-    exit_thread = threading.Thread(target=delayed_exit)
-    exit_thread.daemon = True
-    exit_thread.start()
+    if not pid_file_path:
+        error_msg = "GUNICORN_PID_FILE_PATH environment variable not set. Cannot determine Gunicorn master PID."
+        current_app.logger.error(error_msg)
+        return jsonify({"error": "Gunicorn PID file path not configured. Cannot initiate self-restart."}), 500
 
-    return jsonify({"message": "Deployment service is shutting down for restart."}), 200
+    try:
+        with open(pid_file_path, 'r') as f:
+            master_pid_str = f.read().strip()
+
+        if not master_pid_str:
+            raise ValueError("PID file is empty.")
+
+        master_pid = int(master_pid_str)
+        current_app.logger.info(f"Read Gunicorn master PID {master_pid} from {pid_file_path}.")
+
+        os.kill(master_pid, signal.SIGTERM)
+        current_app.logger.info(f"Sent SIGTERM to Gunicorn master PID {master_pid}.")
+
+        return jsonify({"message": "SIGTERM signal sent to Gunicorn master. Service restart initiated."}), 200
+
+    except FileNotFoundError:
+        error_msg = f"Gunicorn PID file not found at {pid_file_path}."
+        current_app.logger.error(error_msg)
+        return jsonify({"error": f"Gunicorn PID file not found at {pid_file_path}. Cannot initiate self-restart."}), 500
+    except ValueError:
+        error_msg = f"Invalid PID found in Gunicorn PID file {pid_file_path}."
+        current_app.logger.error(error_msg)
+        return jsonify({"error": f"Invalid PID in Gunicorn PID file {pid_file_path}. Cannot initiate self-restart."}), 500
+    except Exception as e:
+        error_msg = f"An unexpected error occurred while processing Gunicorn PID: {str(e)}"
+        current_app.logger.error(error_msg)
+        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
 
 # --- Log Viewing API Endpoint ---
 @app.route('/api/git/recent-logs', methods=['GET'])
