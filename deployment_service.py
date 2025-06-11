@@ -81,14 +81,6 @@ MAIN_APP_RESTART_COMMAND = get_config_value(
     "echo 'Main app restart command not configured'"
 )
 
-# DS_HOST: Network host for this deployment service.
-# Resolved in order: DS_HOST env var > 'DS_HOST' in JSON > coded default '127.0.0.1'.
-DS_HOST = get_config_value('DS_HOST', 'DS_HOST', '127.0.0.1')
-
-# DS_PORT: Network port for this deployment service.
-# Resolved in order: DS_PORT env var > 'DS_PORT' in JSON > coded default 5001.
-DS_PORT = get_config_value('DS_PORT', 'DS_PORT', 5001, value_type=int)
-
 # --- End of Configuration Loading ---
 
 # --- Application Setup ---
@@ -97,8 +89,6 @@ app = Flask(__name__) # Flask app for the deployment service
 # Load configuration into Flask app config for easier access in routes
 app.config['GIT_REPO_PATH'] = GIT_REPO_PATH
 app.config['MAIN_APP_RESTART_COMMAND'] = MAIN_APP_RESTART_COMMAND
-app.config['DS_HOST'] = DS_HOST
-app.config['DS_PORT'] = DS_PORT
 
 # --- Basic Health Check Route ---
 @app.route('/health', methods=['GET'])
@@ -107,8 +97,7 @@ def health_check():
         "status": "healthy",
         "message": "Deployment service is running.",
         "git_repo_path": app.config['GIT_REPO_PATH'],
-        "main_app_restart_command": app.config['MAIN_APP_RESTART_COMMAND'],
-        "listening_on": f"{app.config['DS_HOST']}:{app.config['DS_PORT']}"
+        "main_app_restart_command": app.config['MAIN_APP_RESTART_COMMAND']
     }), 200
 
 # --- Admin Interface ---

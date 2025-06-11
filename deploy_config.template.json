@@ -1,6 +1,4 @@
 {
     "DS_GIT_REPO_PATH": null,
-    "DS_MAIN_APP_RESTART_COMMAND": "",
-    "DS_HOST": "0.0.0.0",
-    "DS_PORT": 55009
+    "DS_MAIN_APP_RESTART_COMMAND": ""
 }
