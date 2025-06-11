@@ -86,6 +86,28 @@ gunicorn --bind <DS_HOST>:<DS_PORT> deployment_service:app
 ```
 Replace `<DS_HOST>` and `<DS_PORT>` with your configured host and port.
 
+## Service Deployment (Systemd)
+
+To run this deployment service as a background system service on Linux systems using systemd, follow these steps. The necessary systemd unit configuration (defining how the service is run, user, working directory, etc.) and relevant firewall commands are provided in the `.service` file within this repository.
+
+1.  **Create or Update the Service File:**
+    Copy the contents of the `.service` file from this repository into the systemd service file on your server. You can use a text editor like `nano` for this:
+    ```bash
+    sudo nano /etc/systemd/system/svc-deployment-manager.service
+    ```
+    Inside `nano` (or your editor of choice), paste the entire content from the `.service` file. This includes the `[Unit]`, `[Service]`, and `[Install]` sections, as well as any `ufw` commands (which you should execute separately if not already done, e.g., `sudo ufw allow <DS_PORT>/tcp && sudo ufw reload`). Ensure the port in the `ufw` command matches your `DS_PORT` configuration if you've changed it from the default mentioned in `.service`.
+
+2.  **Reload Systemd, Start, and Enable the Service:**
+    After creating or modifying the service file, execute the following commands:
+    ```bash
+    sudo systemctl daemon-reload  # Reloads systemd manager configuration
+    sudo systemctl start svc-deployment-manager  # Starts the service
+    sudo systemctl enable svc-deployment-manager # Enables the service to start on boot
+    sudo systemctl status svc-deployment-manager # Check the status of the service
+    ```
+
+Refer to the `.service` file for the specific unit configuration details and default firewall rules.
+
 ## API Endpoints
 
 The service exposes the following REST API endpoints for programmatic control:
