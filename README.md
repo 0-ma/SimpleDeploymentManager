@@ -33,7 +33,10 @@ To configure using the JSON file:
         *   If not set via environment variable or this JSON key, it defaults to the current working directory of the deployment service.
 
     *   **`DS_MAIN_APP_RESTART_COMMAND`**: (String) The command that will be executed to restart your main application.
-        *   *Example*: `"sudo systemctl restart my-main-app"` or `"pm2 restart main_app_name"`
+        *   *Examples*:
+            *   `"sudo systemctl restart my-main-app"`
+            *   `"pm2 restart main_app_name"`
+            *   To restart a Python application, you might first find its process ID (PID). You could list Python processes using a command like `ps aux | grep python`. Then, a more specific restart command might involve `pkill` (which sends a signal to processes based on name or other attributes). For instance, if your application is run with `/usr/local/bin/python /home/user/app/app.py`, you could use `pkill -f "/usr/local/bin/python /home/user/app/app.py"`. Be cautious with `pkill` to ensure you target the correct process. Often, this command would be part of a larger script that also handles restarting the application.
         *   If not configured, the service will not be able to restart the main application. The default is an echo command indicating it's not configured.
 
     *   **`DS_HOST`**: (String) The network host address on which the deployment service will listen.
