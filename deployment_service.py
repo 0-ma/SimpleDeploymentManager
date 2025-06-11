@@ -11,7 +11,9 @@
 import os
 import json # Add this import
 import sys # Import sys module
-from flask import Flask, jsonify, request, current_app, render_template, after_this_request # Ensure all are here
+import threading # Import threading module
+import time # Import time module
+from flask import Flask, jsonify, request, current_app, render_template # REMOVED after_this_request
 import git_utils
 import shlex
 import subprocess
@@ -306,16 +308,26 @@ def service_restart_route():
         return jsonify({"error": f"An unexpected error occurred while trying to restart the main application: {str(e)}"}), 500
 
 # --- Deployment Service Management Endpoints ---
+
+def do_exit():
+    """Helper function to call sys.exit(0)."""
+    sys.exit(0)
+
 @app.route('/deployment-service/restart-self', methods=['POST'])
 def deployment_service_restart_self_route():
-    current_app.logger.info("Deployment service restart initiated via API. Attempting to shut down with sys.exit().")
+    current_app.logger.info("Deployment service restart initiated via API. Scheduling shutdown.")
 
-    @after_this_request
-    def call_sys_exit(response):
-        # This function will be called after the response has been prepared and sent.
-        # It's a safer way to ensure the client receives the message before shutdown.
-        sys.exit(0)
-        return response # Standard practice for after_this_request handlers
+    def delayed_exit():
+        """Sleeps briefly then calls do_exit."""
+        time.sleep(0.1) # Short delay to allow HTTP response to be sent
+        current_app.logger.info("Executing delayed exit now.")
+        do_exit()
+
+    # Create and start a daemon thread to handle the exit.
+    # This allows the main thread to return the HTTP response before exiting.
+    exit_thread = threading.Thread(target=delayed_exit)
+    exit_thread.daemon = True
+    exit_thread.start()
 
     return jsonify({"message": "Deployment service is shutting down for restart."}), 200
 
