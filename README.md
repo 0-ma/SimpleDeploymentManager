@@ -88,17 +88,31 @@ Replace `<DS_HOST>` and `<DS_PORT>` with your configured host and port.
 
 ## Service Deployment (Systemd)
 
-To run this deployment service as a background system service on Linux systems using systemd, follow these steps. The necessary systemd unit configuration (defining how the service is run, user, working directory, etc.) and relevant firewall commands are provided in the `.service` file within this repository.
+To run this deployment service as a background system service on Linux systems using systemd, follow these steps. The `.service` file in this repository contains the necessary systemd unit configuration (the `[Unit]`, `[Service]`, and `[Install]` sections, defining how the service is run, user, working directory, etc.). Firewall configuration is detailed in Step 2 below.
 
-1.  **Create or Update the Service File:**
-    Copy the contents of the `.service` file from this repository into the systemd service file on your server. You can use a text editor like `nano` for this:
+1.  **Create or Update the Systemd Service File:**
+    Copy the systemd unit configuration from the `.service` file in this repository into the target systemd service file on your server (e.g., `/etc/systemd/system/svc-deployment-manager.service`). You can use a text editor like `nano` for this:
     ```bash
     sudo nano /etc/systemd/system/svc-deployment-manager.service
     ```
-    Inside `nano` (or your editor of choice), paste the entire content from the `.service` file. This includes the `[Unit]`, `[Service]`, and `[Install]` sections, as well as any `ufw` commands (which you should execute separately if not already done, e.g., `sudo ufw allow <DS_PORT>/tcp && sudo ufw reload`). Ensure the port in the `ufw` command matches your `DS_PORT` configuration if you've changed it from the default mentioned in `.service`.
+    Inside `nano` (or your editor of choice), paste the systemd unit configuration (the `[Unit]`, `[Service]`, and `[Install]` sections) from this repository's `.service` file.
 
-2.  **Reload Systemd, Start, and Enable the Service:**
-    After creating or modifying the service file, execute the following commands:
+2.  **Configure Firewall (if `ufw` is used):**
+    If you are using `ufw` (Uncomplicated Firewall), you'll need to allow traffic on the port this service listens on. The service is configured via `DS_PORT`, which defaults to `55009` (see Configuration section).
+
+    Execute the following commands, replacing `<DS_PORT>` with the actual port number if you have configured a different one:
+    ```bash
+    sudo ufw allow <DS_PORT>/tcp
+    sudo ufw reload
+    ```
+    For example, if using the default port `55009`:
+    ```bash
+    sudo ufw allow 55009/tcp
+    sudo ufw reload
+    ```
+
+3.  **Reload Systemd, Start, and Enable the Service:**
+    After creating or modifying the service file and configuring the firewall, execute the following commands:
     ```bash
     sudo systemctl daemon-reload  # Reloads systemd manager configuration
     sudo systemctl start svc-deployment-manager  # Starts the service
@@ -106,7 +120,7 @@ To run this deployment service as a background system service on Linux systems u
     sudo systemctl status svc-deployment-manager # Check the status of the service
     ```
 
-Refer to the `.service` file for the specific unit configuration details and default firewall rules.
+Refer to the `.service` file in this repository for the specific systemd unit configuration details. Firewall rules are described in Step 2 above.
 
 ## API Endpoints
 

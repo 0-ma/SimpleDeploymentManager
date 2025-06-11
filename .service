@@ -10,6 +10,3 @@ Restart=always
 
 [Install]
 WantedBy=multi-user.target
-
-sudo ufw allow 1234/tcp
-sudo ufw reload
