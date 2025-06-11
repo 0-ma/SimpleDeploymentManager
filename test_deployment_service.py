@@ -294,6 +294,97 @@ class TestDeploymentServiceEndpoints(unittest.TestCase): # Renamed class
         #    For good measure, check that 'HEAD' is not the branch name.
         self.assertNotEqual(current_branch_after, "HEAD")
 
+    def _assert_checkout_success(self, response, expected_local_branch, expected_tracking_branch_short=None):
+        """
+        Helper to assert common success conditions for checkout tests.
+        expected_tracking_branch_short is something like 'origin/branch_name'.
+        """
+        self.assertEqual(response.status_code, 200,
+                         msg=f"Checkout failed. Response data: {response.data.decode() if response.data else 'No data'}")
+
+        current_branch_after, _, retcode_cb = git_utils.get_current_branch_or_commit(self.local_repo_dir)
+        self.assertEqual(retcode_cb, 0)
+        self.assertEqual(current_branch_after, expected_local_branch,
+                         f"Current branch should be '{expected_local_branch}', not '{current_branch_after}'.")
+        self.assertNotEqual(current_branch_after, "HEAD", "Repo is in a detached HEAD state.")
+
+        if expected_tracking_branch_short:
+            # Ensure we are on the branch for @{u} to resolve correctly
+            if current_branch_after != expected_local_branch:
+                 self._run_git_command_in_path(['checkout', expected_local_branch], self.local_repo_dir)
+
+            tracking_branch_stdout, _, retcode_track = git_utils.run_git_command(
+                ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+                self.local_repo_dir
+            )
+            self.assertEqual(retcode_track, 0, msg=f"Could not get tracking info for {expected_local_branch}. Stderr: {_}")
+            self.assertEqual(tracking_branch_stdout, expected_tracking_branch_short,
+                             f"Branch '{expected_local_branch}' should track '{expected_tracking_branch_short}', but tracks '{tracking_branch_stdout}'.")
+
+    def test_checkout_origin_slash_branch_creates_local_tracking_branch(self):
+        BRANCH_NAME = "flex-new-branch"
+        REMOTE_BRANCH_REF = f"origin/{BRANCH_NAME}"
+
+        # 1. Create branch, commit, push to remote
+        self._run_git_command_in_path(['checkout', '-b', BRANCH_NAME], self.local_repo_dir)
+        with open(os.path.join(self.local_repo_dir, f'{BRANCH_NAME}.txt'), 'w') as f:
+            f.write(f'content for {BRANCH_NAME}')
+        self._run_git_command_in_path(['add', '.'], self.local_repo_dir)
+        self._run_git_command_in_path(['commit', '-m', f'Commit for {BRANCH_NAME}'], self.local_repo_dir)
+        self._run_git_command_in_path(['push', 'origin', BRANCH_NAME], self.local_repo_dir)
+
+        # 2. Switch back to main and delete local branch to ensure it's remote-only for the test
+        self._run_git_command_in_path(['checkout', 'main'], self.local_repo_dir)
+        self._run_git_command_in_path(['branch', '-D', BRANCH_NAME], self.local_repo_dir)
+
+        # 3. Fetch so local repo is aware of the remote branch (origin/BRANCH_NAME)
+        #    The previous push makes 'origin/BRANCH_NAME' known to the local git repo's remote-tracking branches,
+        #    but an explicit fetch is good practice if there were any doubts.
+        #    git_utils.fetch(self.local_repo_dir)
+        #    Alternatively, use the API:
+        with app.app_context():
+            fetch_resp = self.app_client.post('/git/fetch')
+        self.assertEqual(fetch_resp.status_code, 200)
+
+        # Action: Call checkout for "origin/BRANCH_NAME"
+        with app.app_context():
+            response = self.app_client.post('/git/checkout', json={'ref': REMOTE_BRANCH_REF})
+
+        # Assertions
+        self._assert_checkout_success(response, BRANCH_NAME, expected_tracking_branch_short=REMOTE_BRANCH_REF)
+
+        # Check that the local branch was actually created (redundant with current branch check, but good for clarity)
+        stdout_list, _, retcode_list = git_utils.run_git_command(['branch', '--list', BRANCH_NAME], self.local_repo_dir)
+        self.assertEqual(retcode_list, 0)
+        self.assertIn(BRANCH_NAME, stdout_list)
+
+    def test_checkout_origin_slash_branch_when_local_exists_activates_local(self):
+        BRANCH_NAME = "flex-existing-local"
+        REMOTE_BRANCH_REF = f"origin/{BRANCH_NAME}"
+
+        # 1. Create branch, commit, push to remote (so it exists in both places)
+        self._run_git_command_in_path(['checkout', '-b', BRANCH_NAME], self.local_repo_dir)
+        with open(os.path.join(self.local_repo_dir, f'{BRANCH_NAME}.txt'), 'w') as f:
+            f.write(f'content for {BRANCH_NAME}')
+        self._run_git_command_in_path(['add', '.'], self.local_repo_dir)
+        self._run_git_command_in_path(['commit', '-m', f'Commit for {BRANCH_NAME}'], self.local_repo_dir)
+        self._run_git_command_in_path(['push', 'origin', BRANCH_NAME], self.local_repo_dir)
+
+        # 2. Switch back to main (so BRANCH_NAME is not the current branch)
+        self._run_git_command_in_path(['checkout', 'main'], self.local_repo_dir)
+
+        # Pre-condition check
+        current_branch_before, _, _ = git_utils.get_current_branch_or_commit(self.local_repo_dir)
+        self.assertEqual(current_branch_before, 'main', "Setup error: current branch should be main.")
+
+        # Action: Call checkout for "origin/BRANCH_NAME"
+        with app.app_context():
+            response = self.app_client.post('/git/checkout', json={'ref': REMOTE_BRANCH_REF})
+
+        # Assertions
+        self._assert_checkout_success(response, BRANCH_NAME, expected_tracking_branch_short=REMOTE_BRANCH_REF)
+        # The key here is that it checked out the *local* BRANCH_NAME.
+        # The tracking assertion also confirms it's set up correctly.
 
     def test_git_checkout_missing_ref_with_real_repo(self):
         # No mock for os.path.isdir needed as GIT_REPO_PATH is valid
