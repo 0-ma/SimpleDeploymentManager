@@ -9,6 +9,7 @@
 # 3. Hardcoded defaults in this script
 
 import os
+import sys # Added import sys
 import json # Add this import
 from flask import Flask, jsonify, request, current_app, render_template # Ensure all are here
 import git_utils
@@ -251,3 +252,19 @@ def service_restart_route():
         }), 500
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred while trying to restart the main application: {str(e)}"}), 500
+
+@app.route('/deployment-service/self-restart', methods=['POST'])
+def self_restart_service_route():
+    # This command restarts THIS deployment service.
+    print("Attempting to self-restart deployment_service via sys.exit(1)...") # Basic logging
+    # Optionally, add a small delay if you want to ensure a response can be sent,
+    # though sys.exit might be abrupt. For a clean shutdown with Werkzeug:
+    # func = request.environ.get('werkzeug.server.shutdown')
+    # if func is None:
+    #     print('Not running with Werkzeug Server, using sys.exit().')
+    #     sys.exit(1) # Exit code 1 to indicate intentional restart
+    # func()
+    # For broader compatibility (e.g., with gunicorn), sys.exit() is more direct.
+    sys.exit(1) # Exit code 1 to indicate intentional restart by admin
+    # The following line is unlikely to be reached but included for completeness.
+    return jsonify({"message": "If you see this, shutdown failed. Service is attempting to exit."}), 200
