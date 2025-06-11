@@ -10,7 +10,8 @@
 
 import os
 import json # Add this import
-from flask import Flask, jsonify, request, current_app, render_template # Ensure all are here
+import sys # Import sys module
+from flask import Flask, jsonify, request, current_app, render_template, after_this_request # Ensure all are here
 import git_utils
 import shlex
 import subprocess
@@ -303,6 +304,20 @@ def service_restart_route():
         }), 500
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred while trying to restart the main application: {str(e)}"}), 500
+
+# --- Deployment Service Management Endpoints ---
+@app.route('/deployment-service/restart-self', methods=['POST'])
+def deployment_service_restart_self_route():
+    current_app.logger.info("Deployment service restart initiated via API. Attempting to shut down with sys.exit().")
+
+    @after_this_request
+    def call_sys_exit(response):
+        # This function will be called after the response has been prepared and sent.
+        # It's a safer way to ensure the client receives the message before shutdown.
+        sys.exit(0)
+        return response # Standard practice for after_this_request handlers
+
+    return jsonify({"message": "Deployment service is shutting down for restart."}), 200
 
 # --- Log Viewing API Endpoint ---
 @app.route('/api/git/recent-logs', methods=['GET'])
