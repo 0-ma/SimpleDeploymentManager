@@ -88,14 +88,30 @@ Replace `<DS_HOST>` and `<DS_PORT>` with your configured host and port.
 
 ## Service Deployment (Systemd)
 
-To run this deployment service as a background system service on Linux systems using systemd, follow these steps. The `.service` file in this repository contains the necessary systemd unit configuration (the `[Unit]`, `[Service]`, and `[Install]` sections, defining how the service is run, user, working directory, etc.). Firewall configuration is detailed in Step 2 below.
+To run this deployment service as a background system service on Linux systems using systemd, follow these steps. Step 1 details the systemd unit configuration. Firewall configuration is detailed in Step 2 below.
 
 1.  **Create or Update the Systemd Service File:**
-    Copy the systemd unit configuration from the `.service` file in this repository into the target systemd service file on your server (e.g., `/etc/systemd/system/svc-deployment-manager.service`). You can use a text editor like `nano` for this:
+    You will need to create a systemd service file for the deployment manager. Use a text editor like `nano` to create and edit the file, typically located at `/etc/systemd/system/svc-deployment-manager.service`:
     ```bash
     sudo nano /etc/systemd/system/svc-deployment-manager.service
     ```
-    Inside `nano` (or your editor of choice), paste the systemd unit configuration (the `[Unit]`, `[Service]`, and `[Install]` sections) from this repository's `.service` file.
+    Paste the following configuration into the file. **Important:** You may need to adjust `User`, `WorkingDirectory`, and `ExecStart` to match your specific setup (e.g., username, path to the cloned repository, and path to your python3 executable if not in `/usr/local/bin/python3`).
+
+    ```ini
+    [Unit]
+    Description=svc-deployment-manager
+    After=network.target
+
+    [Service]
+    User=usr
+    WorkingDirectory=/home/usr/svc-deployment-manager
+    ExecStart=/usr/local/bin/python3 deployment_service.py
+    Restart=always
+
+    [Install]
+    WantedBy=multi-user.target
+    ```
+    Ensure the `WorkingDirectory` points to the root of this service's directory (where `deployment_service.py` is located), and `ExecStart` correctly points to your Python 3 executable and the `deployment_service.py` script. The `User` should be the user under which the service will run.
 
 2.  **Configure Firewall (if `ufw` is used):**
     If you are using `ufw` (Uncomplicated Firewall), you'll need to allow traffic on the port this service listens on. The service is configured via `DS_PORT`, which defaults to `55009` (see Configuration section).
@@ -120,7 +136,7 @@ To run this deployment service as a background system service on Linux systems u
     sudo systemctl status svc-deployment-manager # Check the status of the service
     ```
 
-Refer to the `.service` file in this repository for the specific systemd unit configuration details. Firewall rules are described in Step 2 above.
+The systemd unit configuration is provided in Step 1. Firewall rules are described in Step 2 above.
 
 ## API Endpoints
 
