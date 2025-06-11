@@ -262,11 +262,3 @@ def service_restart_route():
         }), 500
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred while trying to restart the main application: {str(e)}"}), 500
-
-if __name__ == '__main__':
-    # Security Note: Flask's default development server is not for production.
-    # Use a production-grade WSGI server (e.g., Gunicorn, uWSGI) for deployment.
-    # This runs the deployment service.
-    # Ensure the main application (e.g., app.py) is running as a separate process.
-    # Use a production-grade WSGI server (e.g., Gunicorn, uWSGI).
-    app.run(host=app.config['DS_HOST'], port=app.config['DS_PORT'], debug=True)
