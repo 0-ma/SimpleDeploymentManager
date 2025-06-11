@@ -7,7 +7,7 @@ Description=svc-deployment-manager
 After=network.target
 
 [Service]
-User=ogvythf44
+User=usr
 WorkingDirectory=/home/usr/svc-deployment-manager
 ExecStart=/usr/local/bin/python3 deployment_service.py
 Restart=always
