@@ -9,12 +9,52 @@
 # 3. Hardcoded defaults in this script
 
 import os
-import sys # Added import sys
 import json # Add this import
 from flask import Flask, jsonify, request, current_app, render_template # Ensure all are here
 import git_utils
 import shlex
 import subprocess
+import logging
+import logging.handlers
+import os # Added os for path joining if needed, though not strictly necessary for LOG_FILENAME='deployment_service.log'
+
+# --- Logging Configuration ---
+LOG_FILENAME = 'deployment_service.log'
+LOG_LEVEL = logging.INFO
+
+# Get root logger to configure logging for the entire application (including imported modules like git_utils)
+logger = logging.getLogger()
+logger.setLevel(LOG_LEVEL)
+
+# Create rotating file handler
+# For simplicity, LOG_FILENAME is relative to the current working directory of the script.
+# For more robust path handling, os.path.join(os.path.dirname(os.path.abspath(__file__)), LOG_FILENAME)
+# could be used if __file__ is reliably defined in the execution environment.
+log_file_path = LOG_FILENAME
+
+file_handler = logging.handlers.RotatingFileHandler(
+    log_file_path,
+    maxBytes=1024*1024, # 1 MB
+    backupCount=3
+)
+file_handler.setLevel(LOG_LEVEL)
+
+# Create formatter and add it to the handler
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+
+# Add the handler to the logger
+logger.addHandler(file_handler)
+
+# Optional: Log to console as well during development
+# stream_handler = logging.StreamHandler()
+# stream_handler.setLevel(LOG_LEVEL)
+# stream_handler.setFormatter(formatter)
+# logger.addHandler(stream_handler)
+
+logger.info("Logging configured successfully.") # This message will go to the file and console (if stream_handler active)
+# --- End of Logging Configuration ---
+
 
 # --- Configuration Loading ---
 # Defines the name of the JSON configuration file to be loaded.
@@ -82,6 +122,14 @@ MAIN_APP_RESTART_COMMAND = get_config_value(
     "echo 'Main app restart command not configured'"
 )
 
+# DS_HOST: Network host for this deployment service.
+# Resolved in order: DS_HOST env var > 'DS_HOST' in JSON > coded default '127.0.0.1'.
+DS_HOST = get_config_value('DS_HOST', 'DS_HOST', '127.0.0.1')
+
+# DS_PORT: Network port for this deployment service.
+# Resolved in order: DS_PORT env var > 'DS_PORT' in JSON > coded default 5001.
+DS_PORT = get_config_value('DS_PORT', 'DS_PORT', 5001, value_type=int)
+
 # --- End of Configuration Loading ---
 
 # --- Application Setup ---
@@ -90,6 +138,8 @@ app = Flask(__name__) # Flask app for the deployment service
 # Load configuration into Flask app config for easier access in routes
 app.config['GIT_REPO_PATH'] = GIT_REPO_PATH
 app.config['MAIN_APP_RESTART_COMMAND'] = MAIN_APP_RESTART_COMMAND
+app.config['DS_HOST'] = DS_HOST
+app.config['DS_PORT'] = DS_PORT
 
 # --- Basic Health Check Route ---
 @app.route('/health', methods=['GET'])
@@ -98,7 +148,8 @@ def health_check():
         "status": "healthy",
         "message": "Deployment service is running.",
         "git_repo_path": app.config['GIT_REPO_PATH'],
-        "main_app_restart_command": app.config['MAIN_APP_RESTART_COMMAND']
+        "main_app_restart_command": app.config['MAIN_APP_RESTART_COMMAND'],
+        "listening_on": f"{app.config['DS_HOST']}:{app.config['DS_PORT']}"
     }), 200
 
 # --- Admin Interface ---
@@ -253,18 +304,30 @@ def service_restart_route():
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred while trying to restart the main application: {str(e)}"}), 500
 
-@app.route('/deployment-service/self-restart', methods=['POST'])
-def self_restart_service_route():
-    # This command restarts THIS deployment service.
-    print("Attempting to self-restart deployment_service via sys.exit(1)...") # Basic logging
-    # Optionally, add a small delay if you want to ensure a response can be sent,
-    # though sys.exit might be abrupt. For a clean shutdown with Werkzeug:
-    # func = request.environ.get('werkzeug.server.shutdown')
-    # if func is None:
-    #     print('Not running with Werkzeug Server, using sys.exit().')
-    #     sys.exit(1) # Exit code 1 to indicate intentional restart
-    # func()
-    # For broader compatibility (e.g., with gunicorn), sys.exit() is more direct.
-    sys.exit(1) # Exit code 1 to indicate intentional restart by admin
-    # The following line is unlikely to be reached but included for completeness.
-    return jsonify({"message": "If you see this, shutdown failed. Service is attempting to exit."}), 200
+# --- Log Viewing API Endpoint ---
+@app.route('/api/git/recent-logs', methods=['GET'])
+def get_recent_logs_route():
+    num_lines_to_fetch = request.args.get('lines', 100, type=int) # Allow 'lines' query param, default 100
+    if num_lines_to_fetch <= 0 or num_lines_to_fetch > 1000: # Basic validation
+        num_lines_to_fetch = 100
+
+    log_lines = []
+    # LOG_FILENAME is defined globally in this module.
+    # In a larger app, this might come from app.config.
+    try:
+        with open(LOG_FILENAME, 'r') as f:
+            all_lines = f.readlines()
+
+        # Get the last N lines and strip whitespace
+        log_lines = [line.strip() for line in all_lines[-num_lines_to_fetch:]]
+
+    except FileNotFoundError:
+        # Using current_app.logger which is configured by the root logger setup earlier.
+        current_app.logger.info(f"Log file '{LOG_FILENAME}' not found when trying to read for API.")
+        # It's okay to return 200 with a message if file not found, as it's not strictly a client error.
+        return jsonify({"logs": [], "message": f"Log file '{LOG_FILENAME}' not found or is empty."}), 200
+    except Exception as e:
+        current_app.logger.error(f"Error reading log file '{LOG_FILENAME}' for API: {str(e)}")
+        return jsonify({"error": "Failed to read log file.", "details": str(e)}), 500
+
+    return jsonify({"logs": log_lines})

@@ -1,5 +1,8 @@
 import subprocess
 import shlex
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Generic helper to run Git commands
 def run_git_command(command_args, repo_path):
@@ -51,42 +54,65 @@ def checkout(repo_path, ref_name):
     If ref_name is a remote branch (e.g., remotes/origin/feature),
     it attempts to check it out as a local tracking branch.
     """
+    logger.info(f"checkout: Received ref_name='{ref_name}' for repo_path='{repo_path}'")
     safe_ref_name = shlex.quote(ref_name)
+    final_command_args = []
 
     if ref_name.startswith('remotes/'):
-        # Potential remote branch. Example: remotes/origin/my-feature
+        logger.info(f"checkout: '{ref_name}' appears to be a remote branch.")
         parts = ref_name.split('/')
         if len(parts) > 2: # Minimum remotes/<remote_name>/<branch_name>
             simple_branch_name = parts[-1]
             safe_simple_branch_name = shlex.quote(simple_branch_name)
+            logger.info(f"checkout: Extracted simple_branch_name='{simple_branch_name}' from remote ref.")
 
-            # Check if a local branch with this simple name already exists
-            # `git branch --list <branch_name>` outputs the branch name if it exists, or empty otherwise.
-            stdout_check, _, retcode_check = run_git_command(['branch', '--list', safe_simple_branch_name], repo_path) # Using _ for stderr_check as it's not used here.
+            branch_check_cmd = ['branch', '--list', safe_simple_branch_name]
+            logger.info(f"checkout: Checking for existing local branch '{simple_branch_name}' with command: git {' '.join(branch_check_cmd)}")
+            stdout_check, stderr_check, retcode_check = run_git_command(branch_check_cmd, repo_path)
+            logger.info(f"checkout: 'git branch --list' stdout: '{stdout_check}', stderr: '{stderr_check}', retcode: {retcode_check}")
 
             if retcode_check == 0: # 'git branch --list' command executed successfully
                 if not stdout_check.strip():
-                    # Local branch does not exist, create it and track the remote branch
-                    # Command: git checkout -b <simple_branch_name> <original_remote_ref_name>
-                    return run_git_command(['checkout', '-b', safe_simple_branch_name, safe_ref_name], repo_path)
+                    logger.info(f"checkout: Local branch '{simple_branch_name}' not found. Preparing to create new tracking branch.")
+                    final_command_args = ['checkout', '-b', safe_simple_branch_name, safe_ref_name]
                 else:
-                    # Local branch with the same name exists, checkout this local branch instead of the remote one.
-                    return run_git_command(['checkout', safe_simple_branch_name], repo_path)
+                    logger.info(f"checkout: Local branch '{simple_branch_name}' exists. Preparing to checkout local branch.")
+                    final_command_args = ['checkout', safe_simple_branch_name]
             else:
-                # 'git branch --list' command failed. Fallback to trying to checkout the original ref_name directly.
-                # This might lead to detached HEAD if the ref is a remote tracking branch,
-                # or other errors, but it's a fallback for an unexpected error during the check.
-                return run_git_command(['checkout', safe_ref_name], repo_path)
+                logger.warning(f"checkout: 'git branch --list {safe_simple_branch_name}' failed (retcode: {retcode_check}). Falling back to checkout original ref_name.")
+                final_command_args = ['checkout', safe_ref_name]
         else:
-            # Malformed remote branch name, fallback to direct checkout
-            return run_git_command(['checkout', safe_ref_name], repo_path)
+            logger.warning(f"checkout: Remote branch name '{ref_name}' seems malformed. Falling back to direct checkout.")
+            final_command_args = ['checkout', safe_ref_name]
     else:
-        # Not a remote-looking branch, proceed with normal checkout
-        return run_git_command(['checkout', safe_ref_name], repo_path)
+        logger.info(f"checkout: '{ref_name}' is not a remote branch. Proceeding with normal checkout.")
+        final_command_args = ['checkout', safe_ref_name]
+
+    logger.info(f"checkout: Executing final checkout command: git {' '.join(final_command_args)}")
+    stdout, stderr, retcode = run_git_command(final_command_args, repo_path)
+    logger.info(f"checkout: Final checkout stdout: '{stdout}', stderr: '{stderr}', retcode: {retcode}")
+    return stdout, stderr, retcode
 
 def pull(repo_path):
     """Performs git pull on the current branch."""
-    return run_git_command(['pull'], repo_path)
+    logger.info(f"pull: Attempting pull for repo_path='{repo_path}'")
+
+    logger.info(f"pull: Determining current branch/commit before pull...")
+    current_branch, cb_stderr, cb_retcode = get_current_branch_or_commit(repo_path)
+    if cb_retcode == 0:
+        logger.info(f"pull: Pre-pull status - Current branch/commit: '{current_branch}'")
+    else:
+        logger.warning(f"pull: Pre-pull status - Error determining current branch/commit. Stderr: '{cb_stderr}', Retcode: {cb_retcode}")
+        # Potentially, one might choose not to proceed with pull if branch cannot be determined,
+        # but current behavior is to attempt pull regardless.
+
+    pull_command_args = ['pull']
+    logger.info(f"pull: Executing command: git {' '.join(pull_command_args)}")
+
+    stdout, stderr, retcode = run_git_command(pull_command_args, repo_path)
+    logger.info(f"pull: 'git pull' stdout: '{stdout}', stderr: '{stderr}', retcode: {retcode}")
+
+    return stdout, stderr, retcode
 
 def get_current_branch_or_commit(repo_path):
     """Gets the current active branch or commit hash if detached HEAD."""
