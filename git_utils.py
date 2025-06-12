@@ -179,3 +179,124 @@ def get_current_branch_or_commit(repo_path):
     
     # If HEAD, likely detached, get commit hash
     return run_git_command(['rev-parse', 'HEAD'], repo_path)
+
+
+def get_stale_local_branches(repo_path):
+    """
+    Identifies local Git branches that are stale (remote upstream gone) and
+    categorizes them into 'safe_to_delete' (merged into the current main branch)
+    or 'unsafe_stale' (not merged or has unpushed commits).
+
+    Args:
+        repo_path (str): The file system path to the Git repository.
+
+    Returns:
+        dict: A dictionary with two keys:
+              "safe_to_delete": A list of branch names that are stale and merged.
+              "unsafe_stale": A list of branch names that are stale but not merged
+                              or have other reasons to be kept.
+              Returns None if an error occurs during Git command execution.
+    """
+    # Ensure remote-tracking branches are up-to-date
+    fetch_stdout, fetch_stderr, fetch_retcode = fetch(repo_path)
+    if fetch_retcode != 0:
+        logger.error(f"Failed to fetch from remote: {fetch_stderr}")
+        # Depending on requirements, you might want to return None or proceed cautiously
+        # For now, proceeding but logging the error.
+
+    main_branch_name, stderr, retcode = get_current_branch_or_commit(repo_path)
+    if retcode != 0:
+        logger.error(f"Could not determine current branch: {stderr}")
+        return None # Or an empty list/error structure as per contract
+
+    # Get all local branches with their upstream tracking status
+    # %(refname:short) gives the branch name
+    # %(upstream:trackgone) prints '[gone]' if the upstream branch has been deleted
+    stale_check_stdout, stderr, retcode = run_git_command(
+        ['branch', '--format=%(refname:short)%(upstream:trackgone)'], repo_path
+    )
+    if retcode != 0:
+        logger.error(f"Error getting branch statuses: {stderr}")
+        return None
+
+    identified_stale_branches = []
+    for line in stale_check_stdout.splitlines():
+        if '[gone]' in line:
+            # Extract branch name, removing the [gone] part
+            branch_name = line.replace('[gone]', '').strip()
+            if branch_name: # Ensure we don't add empty names
+                identified_stale_branches.append(branch_name)
+
+    if not identified_stale_branches:
+        return [] # Return empty list as per new format
+
+    # Get all branches merged into the main_branch_name (which is HEAD in this context)
+    # Using main_branch_name which could be specific commit if in detached HEAD.
+    # If truly always want merged into the actual *current branch*, then 'HEAD' literal is better.
+    # For this implementation, using main_branch_name as determined.
+    merged_stdout, stderr, retcode = run_git_command(
+        ['branch', '--merged', main_branch_name], repo_path
+    )
+    if retcode != 0:
+        logger.error(f"Error getting merged branches relative to '{main_branch_name}': {stderr}")
+        # If this command fails, we can't determine merged status,
+        # so conservatively mark all identified stale branches as having local changes.
+        merged_branches = []
+    else:
+        merged_branches = [branch.strip().lstrip('* ') for branch in merged_stdout.splitlines()]
+
+    result_list = []
+
+    for branch_name in identified_stale_branches:
+        # Avoid marking the current branch as safe to delete if it's somehow stale
+        if branch_name == main_branch_name:
+            logger.info(f"Branch '{branch_name}' is the current branch/HEAD and also marked stale. Classifying as 'has_local_changes'.")
+            result_list.append({"name": branch_name, "status": "has_local_changes"})
+            continue
+
+        if branch_name in merged_branches:
+            # This branch is stale and merged into the main_branch_name.
+            # Per requirements, this is "safe_to_delete".
+            # The subtask implies that "safe_to_delete" means fully merged to current HEAD.
+            # The original code's "unsafe_stale" maps to "has_local_changes".
+            result_list.append({"name": branch_name, "status": "safe_to_delete"})
+        else:
+            # This branch is stale but not merged into the main_branch_name.
+            # This means it has local changes not yet integrated.
+            result_list.append({"name": branch_name, "status": "has_local_changes"})
+
+    # Branches with no upstream configured will not have '[gone]' and won't be in identified_stale_branches.
+    # Branches with an existing upstream that is simply diverged are also not caught by '[gone]'.
+
+    return result_list
+
+
+def delete_local_branch(repo_path, branch_name):
+    """
+    Deletes a local Git branch using 'git branch -d <branch_name>'.
+
+    Args:
+        repo_path (str): The file system path to the Git repository.
+        branch_name (str): The name of the local branch to delete.
+
+    Returns:
+        tuple: (success: bool, message: str)
+               success is True if the command exit code is 0,
+               message contains stdout if successful, or stderr if failed.
+               Returns (False, "Branch name cannot be empty or must be a string.") if branch_name is invalid.
+    """
+    if not branch_name or not isinstance(branch_name, str):
+        logger.error("delete_local_branch: Branch name is invalid.")
+        return False, "Branch name cannot be empty or must be a string."
+
+    command_args = ['branch', '-d', branch_name]
+
+    logger.info(f"Attempting to delete branch '{branch_name}' in '{repo_path}' (non-forced).")
+    stdout, stderr, retcode = run_git_command(command_args, repo_path)
+
+    if retcode == 0:
+        logger.info(f"Successfully deleted branch '{branch_name}'. Stdout: {stdout}")
+        return True, stdout
+    else:
+        logger.error(f"Failed to delete branch '{branch_name}'. Stderr: {stderr}. Retcode: {retcode}")
+        return False, stderr

@@ -13,7 +13,8 @@ import json # Add this import
 import sys # Import sys module
 import signal # Import signal module
 from flask import Flask, jsonify, request, current_app, render_template
-import git_utils
+from . import git_utils # Assuming git_utils is in the same package
+from .git_utils import get_stale_local_branches, delete_local_branch # Specific imports
 import shlex
 import subprocess
 import logging
@@ -374,3 +375,102 @@ def get_recent_logs_route():
         return jsonify({"error": "Failed to read log file.", "details": str(e)}), 500
 
     return jsonify({"logs": log_lines})
+
+
+# --- New Git Endpoints for Stale and Delete Branch Operations ---
+
+@app.route('/git/stale-branches', methods=['GET']) # Renamed route
+def get_stale_local_branches_route(): # Function name can remain descriptive
+    repo_path = current_app.config.get('GIT_REPO_PATH')
+    if not repo_path or not os.path.isdir(repo_path):
+        current_app.logger.error(f"Stale branches check: Git repository path '{repo_path}' not configured or invalid.")
+        return jsonify({"error": "Git repository path not configured or not a valid directory."}), 500
+
+    current_app.logger.info(f"Fetching stale local branches for repo: {repo_path}")
+    try:
+        stale_branches_data = get_stale_local_branches(repo_path)
+        if stale_branches_data is None: # get_stale_local_branches returns None on some errors
+            current_app.logger.error(f"get_stale_local_branches returned None for repo: {repo_path}")
+            return jsonify({"error": "Error processing stale branches. Could not retrieve current branch or branch statuses."}), 500
+
+        current_app.logger.info(f"Successfully fetched stale branches list for repo {repo_path}")
+        # Wrap the list in a dictionary as per requirements
+        return jsonify({"stale_branches": stale_branches_data}), 200
+    except Exception as e:
+        current_app.logger.error(f"Exception in /git/stale-branches: {str(e)}", exc_info=True) # Updated log message
+        return jsonify({"error": "An unexpected error occurred while fetching stale branches.", "details": str(e)}), 500
+
+
+@app.route('/git/delete-local-branch', methods=['POST']) # Changed route and removed path:branch_name
+def delete_local_branch_route(): # Removed branch_name from signature
+    repo_path = current_app.config.get('GIT_REPO_PATH')
+    if not repo_path or not os.path.isdir(repo_path):
+        current_app.logger.error(f"Delete branch: Git repository path '{repo_path}' not configured or invalid.")
+        return jsonify({"error": "Git repository path not configured or not a valid directory."}), 500
+
+    data = request.get_json()
+    if not data or 'branch_name' not in data:
+        current_app.logger.warning("Delete branch: Request body must be JSON and contain a 'branch_name' field.")
+        return jsonify({"error": "Request body must be JSON and contain a 'branch_name' field."}), 400
+
+    branch_name = data.get('branch_name')
+    if not isinstance(branch_name, str) or not branch_name.strip():
+        current_app.logger.warning("Delete branch: 'branch_name' must be a non-empty string.")
+        return jsonify({"error": "'branch_name' must be a non-empty string."}), 400
+
+    branch_name = branch_name.strip() # Use stripped branch name
+
+    current_app.logger.info(f"Processing delete request for branch '{branch_name}' in repo '{repo_path}'.")
+
+    # Crucial Safety Check
+    try:
+        stale_branches_list = get_stale_local_branches(repo_path)
+        if stale_branches_list is None:
+            current_app.logger.error(f"Could not get stale branches list for safety check when attempting to delete '{branch_name}'.")
+            return jsonify({"error": "Could not verify branch status for deletion. Check service logs."}), 500
+
+        branch_to_delete_info = None
+        for branch_info in stale_branches_list:
+            if branch_info.get('name') == branch_name:
+                branch_to_delete_info = branch_info
+                break
+
+        if not branch_to_delete_info:
+            current_app.logger.warning(f"Branch '{branch_name}' not found among stale branches. Cannot delete.")
+            return jsonify({"error": f"Branch '{branch_name}' is not recognized as a stale branch." , "details": "It may not be stale, or may no longer exist."}), 404 # 404 or 400
+
+        if branch_to_delete_info.get('status') != 'safe_to_delete':
+            current_app.logger.warning(f"Branch '{branch_name}' is stale but not marked 'safe_to_delete'. Status: {branch_to_delete_info.get('status')}. Cannot delete.")
+            return jsonify({
+                "error": f"Branch '{branch_name}' is not eligible for deletion.",
+                "details": f"Current status: '{branch_to_delete_info.get('status')}'. Only branches marked 'safe_to_delete' can be removed via this endpoint."
+            }), 403 # 403 Forbidden as the action is understood but not allowed
+
+    except Exception as e: # Catch errors during the safety check itself
+        current_app.logger.error(f"Exception during safety check for deleting branch '{branch_name}': {str(e)}", exc_info=True)
+        return jsonify({"error": "An unexpected error occurred during branch safety check.", "details": str(e)}), 500
+
+    # If safety check passed, proceed with deletion
+    current_app.logger.info(f"Branch '{branch_name}' is 'safe_to_delete'. Proceeding with deletion.")
+    try:
+        # git_utils.delete_local_branch was updated to not take `force`
+        success, message = delete_local_branch(repo_path, branch_name)
+
+        if success:
+            current_app.logger.info(f"Successfully deleted branch '{branch_name}'. Details: {message}")
+            return jsonify({
+                "message": f"Branch '{branch_name}' deleted successfully.",
+                "details": message  # message is stdout from the command
+            }), 200
+        else:
+            # This case should ideally not be hit often if "safe_to_delete" is accurate,
+            # but could happen if e.g. git state changes between check and delete, or other issues.
+            current_app.logger.warning(f"Failed to delete branch '{branch_name}' even after 'safe_to_delete' check. Details: {message}")
+            return jsonify({
+                "error": f"Failed to delete branch '{branch_name}'.",
+                "details": message # message is stderr from the command
+            }), 500 # 500 because it was expected to succeed
+
+    except Exception as e: # Catch errors during the deletion attempt itself
+        current_app.logger.error(f"Exception while attempting to delete branch '{branch_name}': {str(e)}", exc_info=True)
+        return jsonify({"error": "An unexpected error occurred while deleting the branch.", "details": str(e)}), 500

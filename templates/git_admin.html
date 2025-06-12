@@ -73,6 +73,17 @@
             <button onclick="restartService()" class="danger-button">Restart Service</button>
             <button id="restartDeploymentServiceButton" onclick="restartDeploymentService()" class="danger-button">Restart Deployment Service</button>
         </div>
+
+        <div class="section">
+            <h2>Stale Local Branches</h2>
+            <button id="scanStaleBranchesButton" onclick="scanForStaleBranches()">Scan for Stale Local Branches</button>
+            <div id="deleteAllSafeButtonContainer" style="margin-top: 10px; margin-bottom: 10px;">
+                 <button id="deleteAllSafeButton" onclick="deleteAllSafeStaleBranches()" style="display:none;" class="danger-button">Delete All Safe Stale Branches</button>
+            </div>
+            <div id="staleBranchesListContainer" style="margin-top: 10px;">
+                <p>Click "Scan for Stale Local Branches" to see results.</p>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -170,48 +181,55 @@
             if (!confirm('Are you sure you want to restart the deployment service itself? This will temporarily interrupt its operations.')) {
                 return;
             }
-            await handleGitAction('/deployment-service/restart-self', {}, 'Attempting to restart deployment service...');
+            await handleGitAction('/deployment-service/restart-self', {}, 'Attempting to restart deployment service...', 'POST');
         }
 
-        async function handleGitAction(endpoint, body, loadingMessage) {
-            updateStatus(loadingMessage, 'info'); // Use default duration for info, or set explicitly if needed
-            let responseData = null; 
+        async function handleGitAction(endpoint, body, loadingMessage, method = 'POST') {
+            updateStatus(loadingMessage, 'info', 10000); // Longer default for actions
+            let responseData = null;
             try {
                 const options = {
-                    method: 'POST',
+                    method: method,
                     headers: { 'Content-Type': 'application/json' },
                 };
-                if (Object.keys(body).length > 0) {
-                    options.body = JSON.stringify(body);
+                // Only add body for methods that typically have one (POST, PUT, PATCH)
+                if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+                    if (Object.keys(body).length > 0) {
+                        options.body = JSON.stringify(body);
+                    } else if (method === 'POST') { // Some POST requests might not have a body but still expect JSON header
+                        options.body = JSON.stringify({}); // Send empty JSON object if body is empty for POST
+                    }
                 }
+
                 const response = await fetch(endpoint, options);
-                responseData = await response.json(); 
+                responseData = await response.json();
 
                 if (response.ok) {
                     updateStatus(responseData.message || 'Action successful.', 'success');
-                    if (responseData.stdout) console.log('STDOUT:', responseData.stdout); 
-                    if (responseData.stderr) console.warn('STDERR:', responseData.stderr); // Changed to warn for any stderr
+                    if (responseData.stdout) console.log('STDOUT:', responseData.stdout);
+                    if (responseData.stderr) console.warn('STDERR:', responseData.stderr);
+                     // Specific refresh logic
+                    if (endpoint === '/git/delete-local-branch/' + body.branchName) { // A bit of a hack to get branchName here
+                         scanForStaleBranches(); // Refresh stale list after delete
+                    } else if (endpoint.startsWith('/git/') && method === 'POST') { // For other POST git actions like fetch, pull, checkout
+                        fetchGitInfo(); // General refresh for other git actions
+                    }
+                    // For GET requests like stale-local-branches, the calling function handles UI update.
                 } else {
                     let detail = responseData.error || `Action failed: ${response.statusText} (Status: ${response.status})`;
+                    if (responseData.details) detail += ` Details: ${responseData.details}`;
                     if (responseData.stdout) {
                         detail += `<br><br><strong>Output:</strong><pre>${escapeHtml(responseData.stdout)}</pre>`;
                     }
                     if (responseData.stderr) {
                         detail += `<br><br><strong>Error Details:</strong><pre>${escapeHtml(responseData.stderr)}</pre>`;
                     }
-                    throw new Error(detail); 
+                    throw new Error(detail);
                 }
-                
-                if (endpoint.startsWith('/git/')) {
-                    fetchGitInfo();
-                }
-            } catch (error) { 
+                return responseData; // Return data on success for the caller to process
+            } catch (error) {
                 let message = 'Error: ' + error.message;
-                // This check is to ensure that if responseData is available and the error message 
-                // (which might already include details if thrown from the 'else' block) 
-                // doesn't already contain these, they are appended.
-                // Primarily for network errors where responseData might be null or error is not from the 'else' block.
-                if (responseData && (responseData.stdout || responseData.stderr) && !error.message.includes(responseData.stderr) && !error.message.includes(responseData.stdout)) {
+                 if (responseData && (responseData.stdout || responseData.stderr) && !error.message.includes(String(responseData.stderr)) && !error.message.includes(String(responseData.stdout))) {
                     if (responseData.stdout) {
                         message += `<br><br><strong>Output:</strong><pre>${escapeHtml(responseData.stdout)}</pre>`;
                     }
@@ -219,9 +237,161 @@
                         message += `<br><br><strong>Error Details:</strong><pre>${escapeHtml(responseData.stderr)}</pre>`;
                     }
                 }
-                updateStatus(message, 'error', 10000); 
-                console.error('Action Error Original:', error); // Log original error object for full details
+                updateStatus(message, 'error', 10000);
+                console.error('Action Error Original:', error);
+                return null; // Return null on failure
             }
+        }
+
+        async function scanForStaleBranches() {
+            const listContainer = document.getElementById('staleBranchesListContainer');
+            listContainer.innerHTML = '<p>Loading...</p>';
+            updateStatus('Scanning for stale local branches...', 'info', 10000);
+
+            try {
+                // Directly fetch, as handleGitAction is more for POST actions with simple message updates.
+                // scanForStaleBranches needs to process the returned list.
+                const response = await fetch('/git/stale-branches', { method: 'GET' });
+                const data = await response.json();
+
+                if (response.ok) {
+                    listContainer.innerHTML = ''; // Clear loading/previous
+                    if (data.stale_branches && data.stale_branches.length > 0) {
+                        const ul = document.createElement('ul');
+                        ul.style.listStyleType = 'none'; // Optional: remove bullets
+                        ul.style.paddingLeft = '0'; // Optional: remove default padding
+
+                        let safeToDeleteCount = 0;
+                        data.stale_branches.forEach(branch => {
+                            const li = document.createElement('li');
+                            li.style.marginBottom = '5px'; // Add some spacing
+                            li.dataset.branchName = branch.name; // Store branch name
+                            li.dataset.status = branch.status;   // Store status
+
+                            let statusText = 'Unknown status';
+                            if (branch.status === 'safe_to_delete') {
+                                statusText = 'Safe to delete';
+                                safeToDeleteCount++;
+                            } else if (branch.status === 'has_local_changes') {
+                                statusText = 'Has local changes (upstream gone)';
+                            }
+
+                            li.textContent = `${escapeHtml(branch.name)} (Status: ${escapeHtml(statusText)}) `;
+
+                            if (branch.status === 'safe_to_delete') {
+                                const deleteButton = document.createElement('button');
+                                deleteButton.textContent = 'Delete';
+                                deleteButton.style.marginLeft = '10px';
+                                deleteButton.className = 'danger-button';
+                                deleteButton.onclick = () => deleteLocalBranch(branch.name);
+                                li.appendChild(deleteButton);
+                            }
+                            ul.appendChild(li);
+                        });
+                        listContainer.appendChild(ul);
+
+                        const deleteAllButton = document.getElementById('deleteAllSafeButton');
+                        if (safeToDeleteCount > 0) {
+                            deleteAllButton.textContent = `Delete All Safe Stale Branches (${safeToDeleteCount})`;
+                            deleteAllButton.style.display = 'inline-block';
+                        } else {
+                            deleteAllButton.style.display = 'none';
+                        }
+                        updateStatus('Stale branch scan complete.', 'success');
+                    } else {
+                        document.getElementById('deleteAllSafeButton').style.display = 'none';
+                        listContainer.innerHTML = '<p>No stale local branches found.</p>';
+                        updateStatus('Stale branch scan complete. No branches found.', 'success');
+                    }
+                } else {
+                    document.getElementById('deleteAllSafeButton').style.display = 'none';
+                    const errorDetail = data.error || (data.details ? `${data.details} (Status: ${response.status})` : `Failed to fetch stale branches. Status: ${response.status}`);
+                    listContainer.innerHTML = `<p style="color: red;">Error: ${escapeHtml(errorDetail)}</p>`;
+                    updateStatus(`Error fetching stale branches: ${errorDetail}`, 'error', 10000);
+                }
+            } catch (error) {
+                document.getElementById('deleteAllSafeButton').style.display = 'none';
+                listContainer.innerHTML = `<p style="color: red;">Error: ${escapeHtml(error.message)}</p>`;
+                updateStatus('Error during stale branch scan: ' + error.message, 'error', 10000);
+            }
+        }
+
+        async function deleteLocalBranch(branchName, skipConfirmation = false) {
+            if (!skipConfirmation) {
+                if (!confirm(`Are you sure you want to delete the local branch "${escapeHtml(branchName)}"?`)) {
+                    return null; // Return null if cancelled, so batch can know
+                }
+            }
+
+            // Using handleGitAction for the POST request and standardized status updates.
+            // The body for the API is {"branch_name": branchName}
+            const result = await handleGitAction(
+                '/git/delete-local-branch',
+                { "branch_name": branchName },
+                `Deleting local branch ${escapeHtml(branchName)}...`,
+                'POST'
+            );
+
+            if (result) { // handleGitAction returns responseData on success, null on failure
+                // Refresh logic is now conditional based on who called deleteLocalBranch.
+                // If called from batch, batch will do final refresh.
+                // If called individually, it should refresh.
+                // For simplicity in this step, let individual deletes refresh. Batch will also refresh.
+                // This is slightly redundant but ensures UI is updated.
+                if (!skipConfirmation) { // Only refresh immediately if it's an individual action
+                    await scanForStaleBranches();
+                    await fetchGitInfo();
+                }
+                return result; // Return result for batch processing to know if it succeeded
+            }
+            return null; // Return null on failure or if user cancelled from individual confirm
+        }
+
+        async function deleteAllSafeStaleBranches() {
+            const listContainer = document.getElementById('staleBranchesListContainer');
+            const branchItems = listContainer.querySelectorAll('li[data-status="safe_to_delete"]');
+
+            const branchesToDelete = [];
+            branchItems.forEach(item => {
+                branchesToDelete.push(item.dataset.branchName);
+            });
+
+            if (branchesToDelete.length === 0) {
+                updateStatus('No branches currently marked as "safe_to_delete" in the list.', 'info');
+                return;
+            }
+
+            if (!confirm(`Are you sure you want to delete ${branchesToDelete.length} local branch(es) marked as safe? This action will be performed for each branch.`)) {
+                return;
+            }
+
+            updateStatus(`Starting batch deletion of ${branchesToDelete.length} branches...`, 'info', 0); // Persistent
+            let SucceededCount = 0;
+            let FailedCount = 0;
+
+            for (let i = 0; i < branchesToDelete.length; i++) {
+                const branchName = branchesToDelete[i];
+                updateStatus(`Batch Deletion (${i + 1}/${branchesToDelete.length}): Deleting branch "${escapeHtml(branchName)}"...`, 'info', 0); // Persistent
+                const deleteResult = await deleteLocalBranch(branchName, true); // true to skip individual confirmation
+                if (deleteResult) { // Check if deletion was successful (not cancelled, API success)
+                    SucceededCount++;
+                } else {
+                    FailedCount++;
+                    // deleteLocalBranch already calls updateStatus on failure via handleGitAction.
+                    // We might want a more specific "Batch delete of X failed" here, but for now, rely on individual error.
+                    // Could add a pause or require click to continue on failure if needed.
+                }
+            }
+
+            let finalMessage = `Batch deletion process complete. Successfully deleted ${SucceededCount} branch(es).`;
+            if (FailedCount > 0) {
+                finalMessage += ` Failed to delete ${FailedCount} branch(es). See previous error messages for details.`;
+            }
+            updateStatus(finalMessage, FailedCount > 0 ? 'error' : 'success');
+
+            // Final comprehensive refresh
+            await scanForStaleBranches();
+            await fetchGitInfo();
         }
 
         // Helper function to escape HTML to prevent XSS if stdout/stderr contains HTML characters
@@ -266,7 +436,11 @@
             }, duration);
         }
 
-        document.addEventListener('DOMContentLoaded', fetchGitInfo);
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchGitInfo();
+            // Optionally, scan for stale branches on load, or leave it manual
+            // scanForStaleBranches();
+        });
     </script>
 </body>
 </html>
