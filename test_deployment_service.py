@@ -464,6 +464,172 @@ class TestDeploymentServiceEndpoints(unittest.TestCase): # Renamed class
         finally:
             app.config['MAIN_APP_RESTART_COMMAND'] = original_command
 
+    # --- Tests for automatic service restart ---
+
+    @patch('deployment_service.subprocess.run')
+    @patch('deployment_service.git_utils.pull')
+    def test_pull_success_triggers_restart_when_configured(self, mock_git_pull, mock_subprocess_run):
+        # Configure successful git pull
+        mock_git_pull.return_value = ("Pull successful output", "", 0)
+
+        # Configure successful service restart
+        mock_restart_process = MagicMock()
+        mock_restart_process.stdout = "Mocked app restarted successfully"
+        mock_restart_process.stderr = ""
+        mock_restart_process.returncode = 0
+        mock_subprocess_run.return_value = mock_restart_process
+
+        app.config['MAIN_APP_RESTART_COMMAND'] = 'systemctl restart myapp.service'
+
+        response = self.app_client.post('/git/pull')
+        data = json.loads(response.data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(data['message'], 'Pull successful.')
+        mock_git_pull.assert_called_once_with(app.config['GIT_REPO_PATH'])
+
+        # Check that restart was attempted
+        mock_subprocess_run.assert_called_once()
+        expected_restart_command_args = shlex.split(app.config['MAIN_APP_RESTART_COMMAND'])
+        mock_subprocess_run.assert_called_once_with(
+            expected_restart_command_args,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        # Check restart status in response
+        self.assertIn('restart_status', data)
+        self.assertEqual(data['restart_status']['status'], 'success')
+        self.assertEqual(data['restart_status']['message'], 'Main application restart command executed successfully.')
+        self.assertEqual(data['restart_status']['stdout'], "Mocked app restarted successfully")
+
+    @patch('deployment_service.subprocess.run')
+    @patch('deployment_service.git_utils.pull')
+    def test_pull_failed_does_not_trigger_restart(self, mock_git_pull, mock_subprocess_run):
+        # Configure failed git pull
+        mock_git_pull.return_value = ("Pull failed output", "Error details", 1)
+
+        response = self.app_client.post('/git/pull')
+        data = json.loads(response.data)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(data['error'], 'Pull failed.')
+        mock_git_pull.assert_called_once_with(app.config['GIT_REPO_PATH'])
+
+        # Check that restart was NOT attempted
+        mock_subprocess_run.assert_not_called()
+
+        # Check restart_status is not in response
+        self.assertNotIn('restart_status', data)
+
+    @patch('deployment_service.subprocess.run')
+    @patch('deployment_service.git_utils.pull')
+    def test_pull_success_restart_not_configured(self, mock_git_pull, mock_subprocess_run):
+        # Configure successful git pull
+        mock_git_pull.return_value = ("Pull successful output", "", 0)
+
+        # Simulate restart command not configured
+        original_command = app.config['MAIN_APP_RESTART_COMMAND']
+        app.config['MAIN_APP_RESTART_COMMAND'] = 'echo "Main app restart command not configured"'
+
+        response = self.app_client.post('/git/pull')
+        data = json.loads(response.data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(data['message'], 'Pull successful.')
+        mock_git_pull.assert_called_once_with(app.config['GIT_REPO_PATH'])
+
+        # Check that restart was NOT attempted with a real command
+        mock_subprocess_run.assert_not_called() # _trigger_service_restart itself checks the command
+
+        # Check restart status in response indicates configuration error
+        self.assertIn('restart_status', data)
+        self.assertEqual(data['restart_status']['status'], 'error')
+        self.assertEqual(data['restart_status']['message'], 'Main application restart command not configured in deployment service.')
+
+        # Restore original command
+        app.config['MAIN_APP_RESTART_COMMAND'] = original_command
+
+    @patch('deployment_service.subprocess.run')
+    @patch('deployment_service.git_utils.checkout')
+    def test_checkout_success_triggers_restart_when_configured(self, mock_git_checkout, mock_subprocess_run):
+        # Configure successful git checkout
+        mock_git_checkout.return_value = ("Checkout successful output", "", 0)
+
+        # Configure successful service restart
+        mock_restart_process = MagicMock()
+        mock_restart_process.stdout = "Mocked app restarted successfully after checkout"
+        mock_restart_process.stderr = ""
+        mock_restart_process.returncode = 0
+        mock_subprocess_run.return_value = mock_restart_process
+
+        app.config['MAIN_APP_RESTART_COMMAND'] = 'systemctl restart myapp-checkout.service'
+        ref_name = 'feature-branch'
+
+        response = self.app_client.post('/git/checkout', json={'ref': ref_name})
+        data = json.loads(response.data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(data['message'], f"Checkout to '{ref_name}' successful.")
+        mock_git_checkout.assert_called_once_with(app.config['GIT_REPO_PATH'], ref_name)
+
+        mock_subprocess_run.assert_called_once()
+        expected_restart_command_args = shlex.split(app.config['MAIN_APP_RESTART_COMMAND'])
+        mock_subprocess_run.assert_called_once_with(
+            expected_restart_command_args,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        self.assertIn('restart_status', data)
+        self.assertEqual(data['restart_status']['status'], 'success')
+        self.assertEqual(data['restart_status']['message'], 'Main application restart command executed successfully.')
+        self.assertEqual(data['restart_status']['stdout'], "Mocked app restarted successfully after checkout")
+
+    @patch('deployment_service.subprocess.run')
+    @patch('deployment_service.git_utils.checkout')
+    def test_checkout_failed_does_not_trigger_restart(self, mock_git_checkout, mock_subprocess_run):
+        # Configure failed git checkout
+        mock_git_checkout.return_value = ("Checkout failed output", "Error details", 1)
+        ref_name = 'nonexistent-branch'
+
+        response = self.app_client.post('/git/checkout', json={'ref': ref_name})
+        data = json.loads(response.data)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(data['error'], f"Checkout to '{ref_name}' failed.")
+        mock_git_checkout.assert_called_once_with(app.config['GIT_REPO_PATH'], ref_name)
+
+        mock_subprocess_run.assert_not_called()
+        self.assertNotIn('restart_status', data)
+
+    @patch('deployment_service.subprocess.run')
+    @patch('deployment_service.git_utils.checkout')
+    def test_checkout_success_restart_not_configured(self, mock_git_checkout, mock_subprocess_run):
+        # Configure successful git checkout
+        mock_git_checkout.return_value = ("Checkout successful output", "", 0)
+
+        original_command = app.config['MAIN_APP_RESTART_COMMAND']
+        app.config['MAIN_APP_RESTART_COMMAND'] = 'echo "Main app restart command not configured"'
+        ref_name = 'another-branch'
+
+        response = self.app_client.post('/git/checkout', json={'ref': ref_name})
+        data = json.loads(response.data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(data['message'], f"Checkout to '{ref_name}' successful.")
+        mock_git_checkout.assert_called_once_with(app.config['GIT_REPO_PATH'], ref_name)
+
+        mock_subprocess_run.assert_not_called()
+
+        self.assertIn('restart_status', data)
+        self.assertEqual(data['restart_status']['status'], 'error')
+        self.assertEqual(data['restart_status']['message'], 'Main application restart command not configured in deployment service.')
+
+        app.config['MAIN_APP_RESTART_COMMAND'] = original_command
+
 
 if __name__ == '__main__':
     unittest.main()

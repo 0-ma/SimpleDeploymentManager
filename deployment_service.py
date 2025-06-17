@@ -246,7 +246,13 @@ def git_checkout_route():
     
     stdout, stderr, retcode = git_utils.checkout(repo_path, ref_name)
     if retcode == 0:
-        return jsonify({"message": f"Checkout to '{ref_name}' successful.", "stdout": stdout, "stderr": stderr})
+        restart_status = _trigger_service_restart()
+        return jsonify({
+            "message": f"Checkout to '{ref_name}' successful.",
+            "stdout": stdout,
+            "stderr": stderr,
+            "restart_status": restart_status
+        })
     else:
         return jsonify({"error": f"Checkout to '{ref_name}' failed.", "stdout": stdout, "stderr": stderr}), 500
 
@@ -258,54 +264,93 @@ def git_pull_route():
 
     stdout, stderr, retcode = git_utils.pull(repo_path)
     if retcode == 0:
-        return jsonify({"message": "Pull successful.", "stdout": stdout, "stderr": stderr})
+        restart_status = _trigger_service_restart()
+        return jsonify({
+            "message": "Pull successful.",
+            "stdout": stdout,
+            "stderr": stderr,
+            "restart_status": restart_status
+        })
     else:
         return jsonify({"error": "Pull failed.", "stdout": stdout, "stderr": stderr}), 500
 
 # --- Service Management Endpoint (for the Main Application) ---
-# Security: This endpoint is particularly sensitive. It executes DS_MAIN_APP_RESTART_COMMAND.
-@app.route('/service/restart', methods=['POST'])
-def service_restart_route():
-    # This command restarts the MAIN application (e.g., app.py), NOT this deployment service.
+
+def _trigger_service_restart():
+    """
+    Encapsulates the logic to trigger a restart of the main application.
+    Returns a dictionary with success/error message and status.
+    """
     restart_command = current_app.config.get('MAIN_APP_RESTART_COMMAND')
     
-    if not restart_command or restart_command == 'echo "Main app restart command not configured"': # Check against placeholder
-        return jsonify({"error": "Main application restart command not configured in deployment service."}), 500
+    if not restart_command or restart_command == 'echo "Main app restart command not configured"':
+        return {
+            "status": "error",
+            "message": "Main application restart command not configured in deployment service.",
+            "details": None,
+            "returncode": None
+        }
 
     try:
-        # Using shlex.split for safer command parsing.
         command_args = shlex.split(restart_command)
-        
-        # Execute the command.
-        # Consider implications if the command requires sudo or specific permissions.
-        # The user running deployment_service.py needs appropriate permissions.
         process = subprocess.run(
             command_args,
             capture_output=True,
             text=True,
-            check=False # Handle non-zero exit codes manually
+            check=False
         )
 
         if process.returncode == 0:
-            return jsonify({
+            return {
+                "status": "success",
                 "message": "Main application restart command executed successfully.",
-                "stdout": process.stdout,
-                "stderr": process.stderr # stderr might contain informational messages too
-            })
-        else:
-            return jsonify({
-                "error": "Main application restart command failed.",
                 "stdout": process.stdout,
                 "stderr": process.stderr,
                 "returncode": process.returncode
-            }), 500
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Main application restart command failed.",
+                "stdout": process.stdout,
+                "stderr": process.stderr,
+                "returncode": process.returncode
+            }
     except FileNotFoundError:
-         return jsonify({
-            "error": f"The main app restart command '{restart_command}' or its components not found. Ensure it is correct and in PATH.",
-            "details": "FileNotFoundError"
-        }), 500
+        return {
+            "status": "error",
+            "message": f"The main app restart command '{restart_command}' or its components not found. Ensure it is correct and in PATH.",
+            "details": "FileNotFoundError",
+            "returncode": None
+        }
     except Exception as e:
-        return jsonify({"error": f"An unexpected error occurred while trying to restart the main application: {str(e)}"}), 500
+        return {
+            "status": "error",
+            "message": f"An unexpected error occurred while trying to restart the main application: {str(e)}",
+            "details": str(e),
+            "returncode": None
+        }
+
+# Security: This endpoint is particularly sensitive. It executes DS_MAIN_APP_RESTART_COMMAND.
+@app.route('/service/restart', methods=['POST'])
+def service_restart_route():
+    # This command restarts the MAIN application (e.g., app.py), NOT this deployment service.
+    restart_result = _trigger_service_restart()
+
+    if restart_result["status"] == "success":
+        return jsonify({
+            "message": restart_result["message"],
+            "stdout": restart_result["stdout"],
+            "stderr": restart_result["stderr"]
+        }), 200
+    else:
+        return jsonify({
+            "error": restart_result["message"],
+            "stdout": restart_result.get("stdout"),
+            "stderr": restart_result.get("stderr"),
+            "returncode": restart_result.get("returncode"),
+            "details": restart_result.get("details")
+        }), 500
 
 # --- Deployment Service Management Endpoints ---
 
