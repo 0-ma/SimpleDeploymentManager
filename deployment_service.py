@@ -13,8 +13,8 @@ import json # Add this import
 import sys # Import sys module
 import signal # Import signal module
 from flask import Flask, jsonify, request, current_app, render_template
-from . import git_utils # Assuming git_utils is in the same package
-from .git_utils import get_stale_local_branches, delete_local_branch # Specific imports
+import git_utils # Assuming git_utils is in the same package
+from git_utils import get_stale_local_branches, delete_local_branch # Specific imports
 import shlex
 import subprocess
 import logging
