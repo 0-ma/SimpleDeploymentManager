@@ -197,53 +197,140 @@ def get_stale_local_branches(repo_path):
                               or have other reasons to be kept.
               Returns None if an error occurs during Git command execution.
     """
-    # Ensure remote-tracking branches are up-to-date
+    # 1. Ensure remote-tracking branches are up-to-date
+    logger.info("get_stale_local_branches: Attempting initial fetch.")
     fetch_stdout, fetch_stderr, fetch_retcode = fetch(repo_path)
     if fetch_retcode != 0:
-        logger.error(f"Failed to fetch from remote: {fetch_stderr}")
-        # Depending on requirements, you might want to return None or proceed cautiously
-        # For now, proceeding but logging the error.
+        logger.error(f"get_stale_local_branches: Initial fetch failed. Stderr: {fetch_stderr}. Cannot reliably determine stale branches.")
+        return None
 
-    main_branch_name, stderr, retcode = get_current_branch_or_commit(repo_path)
-    if retcode != 0:
-        logger.error(f"Could not determine current branch: {stderr}")
-        return None # Or an empty list/error structure as per contract
+    # 2. Determine the current main branch name (or commit if detached HEAD)
+    logger.info("get_stale_local_branches: Determining current branch or commit.")
+    main_branch_name, main_branch_stderr, main_branch_retcode = get_current_branch_or_commit(repo_path)
+    if main_branch_retcode != 0:
+        logger.error(f"get_stale_local_branches: Failed to determine current branch/commit. Stderr: {main_branch_stderr}. Cannot proceed.")
+        return None
+    logger.info(f"get_stale_local_branches: Current branch/commit is '{main_branch_name}'.")
 
     # Get all local branches with their upstream tracking status
     # %(refname:short) gives the branch name
     # %(upstream:trackgone) prints '[gone]' if the upstream branch has been deleted
-    stale_check_stdout, stderr, retcode = run_git_command(
-        ['branch', '--format=%(refname:short)%(upstream:trackgone)'], repo_path
-    )
-    if retcode != 0:
-        logger.error(f"Error getting branch statuses: {stderr}")
-        return None
-
     identified_stale_branches = []
-    for line in stale_check_stdout.splitlines():
-        if '[gone]' in line:
-            # Extract branch name, removing the [gone] part
-            branch_name = line.replace('[gone]', '').strip()
-            if branch_name: # Ensure we don't add empty names
-                identified_stale_branches.append(branch_name)
+    original_stale_check_command = ['branch', '--format=%(refname:short)%(upstream:trackgone)']
+    stale_check_stdout, stale_check_stderr, stale_check_retcode = run_git_command(
+        original_stale_check_command, repo_path
+    )
+
+    if stale_check_retcode != 0:
+        # Check for specific error indicating unsupported %(upstream:trackgone)
+        unrecognized_arg_error = "unrecognized %(upstream:trackgone) argument" # Common part of the error
+        # Git versions might have slightly different error messages, e.g. "fatal: ..." or "error: ..."
+        if unrecognized_arg_error in stale_check_stderr.lower(): # Make check case-insensitive
+            logger.warning("Git version does not support %(upstream:trackgone). Using fallback for stale branch detection.")
+
+            # Fallback logic
+            # 1. Fetch (already done at the beginning, but can do again if desired, or ensure it's robust)
+            # For robustness, let's ensure fetch --prune is done here for the fallback.
+            logger.info("Fallback: Running git fetch --all --prune for fallback strategy.")
+            fetch_fb_stdout, fetch_fb_stderr, fetch_fb_retcode = fetch(repo_path)
+            if fetch_fb_retcode != 0:
+                logger.warning(f"Fallback: Failed to fetch during fallback: {fetch_fb_stderr}. Stale branch list might be incomplete or inaccurate.")
+                # Not returning None here, will attempt to proceed with possibly stale local data.
+
+            # 2. Get all local branches
+            logger.info("Fallback: Getting all local branches.")
+            local_branches_stdout, local_branches_stderr, local_branches_retcode = run_git_command(
+                ['branch', '--format=%(refname:short)'], repo_path
+            )
+            if local_branches_retcode != 0:
+                logger.error(f"Fallback: Critical error getting local branches. Stderr: {local_branches_stderr}. Cannot proceed with fallback.")
+                return None
+
+            local_branches = [b.strip() for b in local_branches_stdout.splitlines() if b.strip()]
+            logger.debug(f"Fallback: Found local branches: {local_branches}")
+
+            # 3. Get all remote-tracking branches (full ref names)
+            logger.info("Fallback: Getting all remote-tracking branches.")
+            remote_tracking_stdout, remote_tracking_stderr, remote_tracking_retcode = run_git_command(
+                ['branch', '-r', '--format=%(refname)'], repo_path # Using %(refname) for full path
+            )
+            if remote_tracking_retcode != 0:
+                logger.error(f"Fallback: Critical error getting remote-tracking branches. Stderr: {remote_tracking_stderr}. Cannot proceed with fallback.")
+                return None
+
+            remote_tracking_branches_full_refs = set(rtb.strip() for rtb in remote_tracking_stdout.splitlines() if rtb.strip())
+            logger.debug(f"Fallback: Remote tracking branches (full refs): {remote_tracking_branches_full_refs}")
+
+            # 4. Initialize identified_stale_branches (already done)
+
+            # 5. For each local_branch, check its upstream
+            for local_branch_name in local_branches:
+                if not local_branch_name: continue
+
+                # (a) Get configured remote
+                remote_config_stdout, _, remote_config_retcode = run_git_command(
+                    ['config', f'branch.{local_branch_name}.remote'], repo_path
+                )
+                if remote_config_retcode != 0 or not remote_config_stdout.strip():
+                    logger.warning(f"Fallback: Could not get remote for local branch '{local_branch_name}'. Assuming not stale by this check. Stderr (if any): {_}")
+                    continue
+                configured_remote = remote_config_stdout.strip()
+
+                # (b) Get configured merge ref
+                merge_ref_stdout, merge_ref_stderr, merge_ref_retcode = run_git_command(
+                    ['config', f'branch.{local_branch_name}.merge'], repo_path
+                )
+                if merge_ref_retcode != 0 or not merge_ref_stdout.strip():
+                    logger.warning(f"Fallback: Could not get merge ref for local branch '{local_branch_name}'. Assuming not stale by this check. Stderr (if any): {merge_ref_stderr}")
+                    continue
+                configured_merge_ref = merge_ref_stdout.strip() # e.g., "refs/heads/feature-X"
+
+                # (c.i) Construct the expected remote-tracking branch name
+                # Typically, merge ref "refs/heads/foo" corresponds to remote-tracking "refs/remotes/<remote>/foo"
+                if configured_merge_ref.startswith('refs/heads/'):
+                    simple_branch_part = configured_merge_ref[len('refs/heads/'):]
+                    expected_remote_tracking_ref = f"refs/remotes/{configured_remote}/{simple_branch_part}"
+                    logger.debug(f"Fallback: For local '{local_branch_name}', expected remote ref: '{expected_remote_tracking_ref}'")
+
+                    # (c.ii) Check if this constructed remote-tracking branch name exists
+                    if expected_remote_tracking_ref not in remote_tracking_branches_full_refs:
+                        logger.info(f"Fallback: Identified stale branch '{local_branch_name}' because its remote tracking ref '{expected_remote_tracking_ref}' is missing.")
+                        identified_stale_branches.append(local_branch_name)
+                    else:
+                        logger.debug(f"Fallback: Local branch '{local_branch_name}' has existing remote tracking ref '{expected_remote_tracking_ref}'. Not stale by this check.")
+                else:
+                    logger.warning(f"Fallback: Merge ref '{configured_merge_ref}' for branch '{local_branch_name}' does not start with 'refs/heads/'. Cannot determine corresponding remote ref reliably. Will not be marked stale by this check.")
+        else:
+            # Original command failed for reasons other than "unrecognized argument"
+            logger.error(f"get_stale_local_branches: Failed to get branch statuses using primary method (%(upstream:trackgone)). Stderr: {stale_check_stderr}. Cannot proceed.")
+            return None
+    else:
+        # Original command was successful (%(upstream:trackgone) is supported)
+        logger.info("get_stale_local_branches: Successfully used %(upstream:trackgone) to check for stale branches.")
+        for line in stale_check_stdout.splitlines():
+            if '[gone]' in line:
+                branch_name = line.replace('[gone]', '').strip()
+                if branch_name:
+                    identified_stale_branches.append(branch_name)
+        logger.info(f"Identified stale branches (via primary method): {identified_stale_branches}")
+
 
     if not identified_stale_branches:
-        return [] # Return empty list as per new format
+        logger.info("get_stale_local_branches: No stale branches identified.")
+        return [] # Return empty list as per format
 
-    # Get all branches merged into the main_branch_name (which is HEAD in this context)
-    # Using main_branch_name which could be specific commit if in detached HEAD.
-    # If truly always want merged into the actual *current branch*, then 'HEAD' literal is better.
-    # For this implementation, using main_branch_name as determined.
-    merged_stdout, stderr, retcode = run_git_command(
+    # Determine which of the identified stale branches are merged into the main_branch_name
+    logger.info(f"get_stale_local_branches: Checking merge status of identified stale branches against '{main_branch_name}'.")
+    merged_branches = []
+    merged_stdout, merged_stderr, merged_retcode = run_git_command(
         ['branch', '--merged', main_branch_name], repo_path
     )
-    if retcode != 0:
-        logger.error(f"Error getting merged branches relative to '{main_branch_name}': {stderr}")
-        # If this command fails, we can't determine merged status,
-        # so conservatively mark all identified stale branches as having local changes.
-        merged_branches = []
+    if merged_retcode != 0:
+        logger.error(f"get_stale_local_branches: Failed to get list of branches merged into '{main_branch_name}'. Stderr: {merged_stderr}. Conservatively assuming no stale branches are merged.")
+        # Continue with an empty merged_branches list, meaning all stale branches will be 'has_local_changes'
     else:
         merged_branches = [branch.strip().lstrip('* ') for branch in merged_stdout.splitlines()]
+        logger.debug(f"Branches merged into '{main_branch_name}': {merged_branches}")
 
     result_list = []
 
