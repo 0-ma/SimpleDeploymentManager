@@ -205,7 +205,17 @@
                 responseData = await response.json();
 
                 if (response.ok) {
-                    updateStatus(responseData.message || 'Action successful.', 'success');
+                    let finalMessage = responseData.message || 'Action successful.';
+                    // Check for restart_status in pull or checkout operations
+                    if ((endpoint === '/git/pull' || endpoint === '/git/checkout') && responseData.restart_status) {
+                        if (responseData.restart_status.message) {
+                            finalMessage += ` ${responseData.restart_status.message}`;
+                        }
+                        // If restart failed or had an issue, the message from restart_status should reflect that.
+                        // The main status of the git operation is still 'success' here.
+                    }
+                    updateStatus(finalMessage, 'success');
+
                     if (responseData.stdout) console.log('STDOUT:', responseData.stdout);
                     if (responseData.stderr) console.warn('STDERR:', responseData.stderr);
                      // Specific refresh logic
