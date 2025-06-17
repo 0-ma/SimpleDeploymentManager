@@ -31,7 +31,10 @@
         {% endif %}
         <h1>Git Repository Management</h1>
 
-        <div id="statusMessage" class="status-message" style="display:none;"></div>
+        <div id="logContainerWrapper">
+            <h3>Log Messages</h3><button id="refreshLogsButton">Refresh Logs</button>
+            <div id="logContainer" style="height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background-color: #f9f9f9;"></div>
+        </div>
 
         <div class="section">
             <h2>Current Status</h2>
@@ -87,7 +90,39 @@
     </div>
 
     <script>
-        let globalStatusTimeoutId; // Store the timeout ID globally
+        async function fetchAndDisplayLogs() {
+            const logContainer = document.getElementById('logContainer');
+            logContainer.innerHTML = 'Loading logs...'; // Placeholder while fetching
+
+            try {
+                const response = await fetch('/api/git/recent-logs?lines=100');
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Failed to fetch logs: ${response.status} ${response.statusText}. Details: ${errorText}`);
+                }
+                const data = await response.json();
+
+                logContainer.innerHTML = ''; // Clear placeholder/old logs
+
+                if (data.logs && data.logs.length > 0) {
+                    data.logs.forEach(logMessage => {
+                        const div = document.createElement('div');
+                        div.textContent = logMessage;
+                        logContainer.appendChild(div);
+                    });
+                    logContainer.scrollTop = logContainer.scrollHeight; // Scroll to bottom
+                } else {
+                    logContainer.textContent = 'No log messages found.';
+                }
+            } catch (error) {
+                logContainer.innerHTML = ''; // Clear placeholder
+                const errorDiv = document.createElement('div');
+                errorDiv.style.color = 'red';
+                errorDiv.textContent = 'Error fetching or displaying logs: ' + error.message;
+                logContainer.appendChild(errorDiv);
+                console.error('Error in fetchAndDisplayLogs:', error);
+            }
+        }
 
         async function fetchGitInfo() {
             updateStatus('Fetching git info...', 'info', 10000); 
@@ -428,26 +463,20 @@
         }
         
         function updateStatus(message, type, duration = 5000) {
-            const statusElement = document.getElementById('statusMessage');
-            clearTimeout(globalStatusTimeoutId); // Use the existing globalStatusTimeoutId
-
-            statusElement.innerHTML = message; // Use innerHTML to render <pre> and <br>
-            statusElement.className = 'status-message ' + type; 
-            statusElement.style.display = 'block';
-            
-            // 'info' messages with duration 0 (or if not specified by 'info' call) will use default 5s timeout.
-            // To make an 'info' message persistent until the next update, one might pass a very long duration 
-            // or handle it specially, but current logic uses duration.
-            // A duration of 0 for info would mean it disappears almost immediately if not handled.
-            // The prompt example `updateStatus(loadingMessage, 'info');` would use 5000ms.
-            // The prompt example `updateStatus('Fetching git info...', 'info', 10000);` uses 10000ms.
-            globalStatusTimeoutId = setTimeout(() => {
-                statusElement.style.display = 'none';
-            }, duration);
+            // The message, type, and duration parameters are now ignored.
+            // This function's role is simplified to just refreshing the log display.
+            // Actual status messages (success/error/info) will be part of the log stream from the backend.
+            fetchAndDisplayLogs();
         }
 
         document.addEventListener('DOMContentLoaded', () => {
             fetchGitInfo();
+            fetchAndDisplayLogs(); // Initial log load
+
+            const refreshButton = document.getElementById('refreshLogsButton');
+            if (refreshButton) {
+                refreshButton.addEventListener('click', fetchAndDisplayLogs);
+            }
             // Optionally, scan for stale branches on load, or leave it manual
             // scanForStaleBranches();
         });
